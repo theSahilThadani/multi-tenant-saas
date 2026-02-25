@@ -1,10 +1,29 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import StepIndicator from "../components/StepIndicator";
 import SlugChecker from "../components/SlugChecker";
 import LoadingSpinner from "../components/LoadingSpinner";
 import { createTenant } from "../services/api";
 import config from "../config";
+
+const PLANS = [
+  {
+    id: "free",
+    name: "Free Trial",
+    users: "Up to 5 users",
+    badge: "Start here",
+  },
+  {
+    id: "pro",
+    name: "Pro",
+    users: "Up to 100 users",
+    badge: "Popular",
+  },
+  {
+    id: "enterprise",
+    name: "Enterprise",
+    users: "Unlimited users",
+  },
+];
 
 export default function SignupPage() {
   const navigate = useNavigate();
@@ -66,14 +85,21 @@ export default function SignupPage() {
       if (err.error === "SLUG_TAKEN" || err.error === "SLUG_RESERVED") {
         setSlugError(err.message || "Not available");
         setSlugValid(false);
-      } else if (err.error === "TOKEN_EXPIRED" || err.error === "INVALID_TOKEN") {
+      } else if (
+        err.error === "TOKEN_EXPIRED" ||
+        err.error === "INVALID_TOKEN"
+      ) {
         setApiError("Session expired. Please login again.");
         setTimeout(() => navigate("/login"), 3000);
       } else if (err.error === "ALREADY_HAS_TENANT") {
         setApiError("You already have a workspace.");
-        setTimeout(() => navigate("/welcome-back", {
-          state: { tenantSlug: err.tenantSlug },
-        }), 2000);
+        setTimeout(
+          () =>
+            navigate("/welcome-back", {
+              state: { tenantSlug: err.tenantSlug },
+            }),
+          2000
+        );
       } else if (err.error === "VALIDATION_ERROR") {
         setErrors(err.details || {});
       } else {
@@ -90,17 +116,54 @@ export default function SignupPage() {
           <div className="logo-icon">{config.APP_NAME.charAt(0)}</div>
           <span className="logo-text">{config.APP_NAME}</span>
         </a>
+        <div className="trial-badge" style={{ fontSize: 12 }}>
+          ✦ Free 14-day trial
+        </div>
       </header>
 
       <main className="page-content">
-        <div className="card">
+        <div className="card" style={{ maxWidth: 560 }}>
           <div className="card-header">
+            {/* Verified badge */}
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                background: "var(--success-light)",
+                color: "var(--success)",
+                padding: "4px 12px",
+                borderRadius: 100,
+                fontSize: 13,
+                fontWeight: 600,
+                marginBottom: 16,
+              }}
+            >
+              ✓ Email verified
+            </div>
             <h1>Set up your workspace</h1>
-            <p>Signed in as <strong>{email}</strong></p>
+            <p>
+              Setting up for <strong>{email}</strong>
+            </p>
           </div>
 
           <div className="card-body">
-            <StepIndicator currentStep={3} />
+            {/* Step progress */}
+            <div className="onboarding-steps">
+              {["Verify Email", "Configure", "Launch"].map((step, i) => (
+                <div
+                  key={i}
+                  className={`onboarding-step ${
+                    i < 1 ? "done" : i === 1 ? "active" : ""
+                  }`}
+                >
+                  <div className="onboarding-step-dot">
+                    {i < 1 ? "✓" : i + 1}
+                  </div>
+                  <span>{step}</span>
+                </div>
+              ))}
+            </div>
 
             {apiError && (
               <div className="alert alert-error">
@@ -110,6 +173,7 @@ export default function SignupPage() {
             )}
 
             <form onSubmit={handleSubmit} noValidate>
+              {/* Company Name */}
               <div className="form-group">
                 <label className="form-label">
                   Company Name <span className="required">*</span>
@@ -120,7 +184,8 @@ export default function SignupPage() {
                   value={companyName}
                   onChange={(e) => {
                     setCompanyName(e.target.value);
-                    if (errors.companyName) setErrors((p) => ({ ...p, companyName: "" }));
+                    if (errors.companyName)
+                      setErrors((p) => ({ ...p, companyName: "" }));
                   }}
                   placeholder="Acme Corporation"
                   maxLength={255}
@@ -132,6 +197,7 @@ export default function SignupPage() {
                 )}
               </div>
 
+              {/* Subdomain */}
               <SlugChecker
                 value={slug}
                 onChange={(val) => {
@@ -143,25 +209,33 @@ export default function SignupPage() {
                 setSlugValid={setSlugValid}
               />
 
+              {/* Plan Cards */}
               <div className="form-group">
-                <label className="form-label">Plan</label>
-                <select
-                  className="form-select"
-                  value={plan}
-                  onChange={(e) => setPlan(e.target.value)}
-                  disabled={submitting}
-                >
-                  <option value="free">Free — Up to 10 users</option>
-                  <option value="pro">Pro — Up to 100 users</option>
-                  <option value="enterprise">Enterprise — Unlimited</option>
-                </select>
+                <label className="form-label">Choose your plan</label>
+                <div className="plan-cards">
+                  {PLANS.map((p) => (
+                    <div
+                      key={p.id}
+                      className={`plan-card ${plan === p.id ? "selected" : ""}`}
+                      onClick={() => !submitting && setPlan(p.id)}
+                    >
+                      {p.badge && (
+                        <div className="plan-popular-badge">{p.badge}</div>
+                      )}
+                      <div className="plan-name">{p.name}</div>
+                      <div className="plan-users">{p.users}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
+              {/* Submit */}
               <div className="form-group" style={{ marginTop: 32 }}>
                 <button
                   type="submit"
                   className="btn btn-primary"
                   disabled={submitting || !slugValid}
+                  style={{ fontSize: 16, padding: "14px 24px" }}
                 >
                   {submitting ? (
                     <>
@@ -169,7 +243,7 @@ export default function SignupPage() {
                       Creating workspace...
                     </>
                   ) : (
-                    <>🚀 Create Workspace</>
+                    "🚀 Launch Workspace"
                   )}
                 </button>
               </div>

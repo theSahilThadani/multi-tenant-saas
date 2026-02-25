@@ -5,58 +5,202 @@ import LoadingSpinner from "../components/LoadingSpinner";
 import { sendOtp, signinSendOtp } from "../services/api";
 import config from "../config";
 
-export default function LoginPage() {
+// ─────────────────────────────────────────────────────────
+// MAIN SITE: Branded split-screen trial signup / sign-in
+// ─────────────────────────────────────────────────────────
+function MainSiteLogin() {
   const navigate = useNavigate();
-  const tenant = useTenant();
-
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const isTenantMode = tenant.isTenantMode;
-  const displayName = isTenantMode ? tenant.tenantName : config.APP_NAME;
-
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-
     const trimmed = email.trim().toLowerCase();
     if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
       setError("Please enter a valid email address");
       return;
     }
-
     setLoading(true);
-
     try {
-      if (isTenantMode) {
-        // ── TENANT MODE: acme-corp.motadata.com ──
-        const result = await signinSendOtp(trimmed, tenant.tenantSlug);
-        navigate("/verify", {
-          state: {
-            email: trimmed,
-            session: result.session,
-            mode: "TENANT",
-            tenantSlug: tenant.tenantSlug,
-            tenantName: result.tenantName,
-          },
-        });
-      } else {
-        // ── MAIN SITE: motadata.com ──
-        const result = await sendOtp(trimmed);
-        navigate("/verify", {
-          state: {
-            email: trimmed,
-            session: result.session,
-            mode: "MAIN",
-            hasTenant: result.hasTenant,
-            tenantSlug: result.tenantSlug,
-          },
-        });
-      }
+      const result = await sendOtp(trimmed);
+      navigate("/verify", {
+        state: {
+          email: trimmed,
+          session: result.session,
+          mode: "MAIN",
+          hasTenant: result.hasTenant,
+          tenantSlug: result.tenantSlug,
+        },
+      });
+    } catch (err) {
+      setError(err.message || "Could not send verification code. Try again.");
+    }
+    setLoading(false);
+  }
+
+  const features = [
+    "Passwordless login — no passwords to manage",
+    `Custom subdomain: yourteam.${config.APP_DOMAIN}`,
+    "Role-based access control built in",
+    "Up and running in under 2 minutes",
+  ];
+
+  return (
+    <div className="split-layout">
+      {/* ── Left: Branding Panel ── */}
+      <div className="split-left">
+        <div className="brand-hero">
+          <div className="brand-logo-wrap">
+            <div className="brand-logo-icon">{config.APP_NAME.charAt(0)}</div>
+            <span className="brand-logo-name">{config.APP_NAME}</span>
+          </div>
+
+          <h1 className="brand-tagline">
+            Launch your team workspace in minutes
+          </h1>
+          <p className="brand-sub">
+            The all-in-one multi-tenant platform for modern teams. Get a branded
+            subdomain, passwordless login, and your workspace live instantly.
+          </p>
+
+          <ul className="feature-list">
+            {features.map((f, i) => (
+              <li key={i} className="feature-item">
+                <span className="feature-check">✓</span>
+                <span>{f}</span>
+              </li>
+            ))}
+          </ul>
+
+          <div className="trial-badge">
+            ✦ Free 14-day trial · No credit card required
+          </div>
+        </div>
+      </div>
+
+      {/* ── Right: Form Panel ── */}
+      <div className="split-right">
+        <div className="auth-form-container">
+          <h2>Start your free trial</h2>
+          <p className="auth-sub">
+            Enter your work email to get started. New users create a workspace;
+            existing users are redirected to theirs.
+          </p>
+
+          {error && (
+            <div className="alert alert-error">
+              <span className="alert-icon">⚠</span>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} noValidate>
+            <div className="form-group">
+              <label className="form-label">
+                Work Email <span className="required">*</span>
+              </label>
+              <input
+                type="email"
+                className={`form-input ${error ? "error" : ""}`}
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (error) setError("");
+                }}
+                placeholder="you@company.com"
+                disabled={loading}
+                autoFocus
+                autoComplete="email"
+              />
+              <div className="form-hint">
+                We'll send an 8-digit one-time code to this email
+              </div>
+            </div>
+
+            <div className="form-group" style={{ marginTop: 24 }}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={loading || !email.trim()}
+                style={{ fontSize: 16, padding: "14px 24px" }}
+              >
+                {loading ? (
+                  <>
+                    <LoadingSpinner white size={18} />
+                    Sending code...
+                  </>
+                ) : (
+                  "Get Started →"
+                )}
+              </button>
+            </div>
+          </form>
+
+          <div
+            style={{
+              marginTop: 28,
+              padding: "16px",
+              background: "var(--gray-50)",
+              borderRadius: "var(--radius)",
+              border: "1px solid var(--gray-200)",
+              fontSize: 13,
+              color: "var(--gray-600)",
+              lineHeight: 1.6,
+            }}
+          >
+            <strong style={{ color: "var(--gray-800)" }}>
+              Already have a workspace?
+            </strong>{" "}
+            Enter your email above and you'll be redirected to your existing
+            workspace after verification.
+          </div>
+        </div>
+
+        <div className="split-right-footer">
+          © 2026 {config.APP_NAME}. All rights reserved.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
+// TENANT SUBDOMAIN: Minimal branded login card
+// ─────────────────────────────────────────────────────────
+function TenantLogin() {
+  const navigate = useNavigate();
+  const tenant = useTenant();
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const primaryColor = tenant.primaryColor || "#4F46E5";
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setError("Please enter a valid email address");
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await signinSendOtp(trimmed, tenant.tenantSlug);
+      navigate("/verify", {
+        state: {
+          email: trimmed,
+          session: result.session,
+          mode: "TENANT",
+          tenantSlug: tenant.tenantSlug,
+          tenantName: tenant.tenantName,
+        },
+      });
     } catch (err) {
       if (err.error === "USER_NOT_FOUND") {
-        setError("No account found for this workspace. Contact your admin.");
+        setError("No account found here. Contact your admin.");
       } else if (err.error === "WRONG_WORKSPACE") {
         setError(err.message || "You belong to a different workspace.");
       } else if (err.error === "NO_WORKSPACE") {
@@ -65,31 +209,43 @@ export default function LoginPage() {
         setError(err.message || "Could not send verification code.");
       }
     }
-
     setLoading(false);
   }
 
   return (
-    <div className="page-wrapper">
-      <header className="page-header">
-        <a href="/" className="logo">
-          <div className="logo-icon">{displayName.charAt(0)}</div>
-          <span className="logo-text">{displayName}</span>
-        </a>
-      </header>
-
-      <main className="page-content">
-        <div className="card">
-          <div className="card-header">
-            <h1>
-              {isTenantMode
-                ? `Sign in to ${tenant.tenantName}`
-                : `Welcome to ${config.APP_NAME}`}
-            </h1>
-            <p>Enter your email to continue</p>
+    <div className="tenant-login-wrapper">
+      <main className="tenant-login-content">
+        <div className="tenant-login-card">
+          {/* Tenant Branding Header */}
+          <div className="tenant-brand-header">
+            {tenant.logoUrl ? (
+              <img
+                src={tenant.logoUrl}
+                alt={tenant.tenantName}
+                style={{
+                  height: 56,
+                  maxWidth: 200,
+                  objectFit: "contain",
+                  margin: "0 auto 16px",
+                  display: "block",
+                }}
+              />
+            ) : (
+              <div
+                className="tenant-logo-circle"
+                style={{ background: primaryColor }}
+              >
+                {tenant.tenantName.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div className="tenant-brand-name">{tenant.tenantName}</div>
+            <div className="tenant-brand-sub">
+              {tenant.welcomeMessage || "Sign in to your workspace"}
+            </div>
           </div>
 
-          <div className="card-body">
+          {/* Login Form */}
+          <div style={{ padding: "32px 40px 40px" }}>
             {error && (
               <div className="alert alert-error">
                 <span className="alert-icon">⚠</span>
@@ -100,7 +256,7 @@ export default function LoginPage() {
             <form onSubmit={handleSubmit} noValidate>
               <div className="form-group">
                 <label className="form-label">
-                  Email <span className="required">*</span>
+                  Email Address <span className="required">*</span>
                 </label>
                 <input
                   type="email"
@@ -110,25 +266,22 @@ export default function LoginPage() {
                     setEmail(e.target.value);
                     if (error) setError("");
                   }}
-                  placeholder={
-                    isTenantMode
-                      ? "yourname@company.com"
-                      : "admin@yourcompany.com"
-                  }
+                  placeholder="yourname@company.com"
                   disabled={loading}
                   autoFocus
                   autoComplete="email"
                 />
                 <div className="form-hint">
-                  We'll send a verification code to this email
+                  We'll send a one-time code to this email
                 </div>
               </div>
 
-              <div className="form-group" style={{ marginTop: 28 }}>
+              <div className="form-group" style={{ marginTop: 8 }}>
                 <button
                   type="submit"
                   className="btn btn-primary"
                   disabled={loading || !email.trim()}
+                  style={{ background: primaryColor }}
                 >
                   {loading ? (
                     <>
@@ -136,44 +289,56 @@ export default function LoginPage() {
                       Sending code...
                     </>
                   ) : (
-                    <>📧 Continue</>
+                    "Continue with Email →"
                   )}
                 </button>
               </div>
             </form>
 
-            {/* Show signup link only on main site */}
-            {!isTenantMode && (
-              <div
+            <div
+              style={{
+                textAlign: "center",
+                marginTop: 24,
+                fontSize: 13,
+                color: "var(--gray-400)",
+              }}
+            >
+              Powered by{" "}
+              <a
+                href={`https://${config.APP_DOMAIN}`}
                 style={{
-                  textAlign: "center",
-                  marginTop: 20,
-                  fontSize: 14,
-                  color: "var(--gray-500)",
+                  color: "var(--primary)",
+                  textDecoration: "none",
+                  fontWeight: 600,
                 }}
+                target="_blank"
+                rel="noopener noreferrer"
               >
-                <p>
-                  New here?{" "}
-                  <a
-                    href="/signup"
-                    style={{
-                      color: "var(--primary)",
-                      fontWeight: 600,
-                      textDecoration: "none",
-                    }}
-                  >
-                    Create a workspace
-                  </a>
-                </p>
-              </div>
-            )}
+                {config.APP_NAME}
+              </a>
+            </div>
           </div>
         </div>
       </main>
 
-      <footer className="page-footer">
+      <footer
+        style={{
+          padding: "20px",
+          textAlign: "center",
+          color: "rgba(255,255,255,0.5)",
+          fontSize: 12,
+        }}
+      >
         © 2026 {config.APP_NAME}. All rights reserved.
       </footer>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────
+// Main export: switches on isTenantMode
+// ─────────────────────────────────────────────────────────
+export default function LoginPage() {
+  const tenant = useTenant();
+  return tenant.isTenantMode ? <TenantLogin /> : <MainSiteLogin />;
 }

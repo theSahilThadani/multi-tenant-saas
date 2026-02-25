@@ -38,6 +38,7 @@ def response(status_code, body):
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 cognito = boto3.client("cognito-idp")
+s3 = boto3.client("s3")
 
 
 # ═════════════════════════════════════════════════════
@@ -239,10 +240,10 @@ def handle_verify_otp(event):
 
 def handle_tenant_info(event):
     """
-    GET /signin/tenant-info?slug=acme-corp
+    GET /signin/tenant-info?slug=bigdata
 
-    Returns tenant details for the branded login page.
-    Called by React on page load at acme-corp.motadata.com
+    Returns tenant details + S3 branding config for the branded login page.
+    Called by React on page load at bigdata.nextgendevacademy.com
     """
     params = event.get("queryStringParameters") or {}
     slug = params.get("slug", "").strip().lower()
@@ -257,14 +258,32 @@ def handle_tenant_info(event):
             "message": "This workspace does not exist",
         })
 
-    app_domain = os.environ.get("APP_DOMAIN", "motadata.com")
+    app_domain = os.environ.get("APP_DOMAIN", "nextgendevacademy.com")
+
+    # ── Fetch branding from S3 ──
+    branding = {}
+    bucket = os.environ.get("TENANT_ASSETS_BUCKET", "")
+    if bucket:
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=f"branding/{slug}.json")
+            branding = json.loads(obj["Body"].read().decode("utf-8"))
+        except s3.exceptions.NoSuchKey:
+            print(f"[TENANT-INFO] No branding file found for {slug}, using defaults")
+        except Exception as e:
+            print(f"[TENANT-INFO] WARNING: Could not fetch branding from S3: {str(e)}")
 
     return response(200, {
         "tenantSlug": tenant["slug"],
-        "tenantName": tenant["name"],
+        "tenantName": branding.get("displayName") or tenant["name"],
         "plan": tenant["plan"],
         "status": tenant["status"],
         "loginUrl": f"https://{slug}.{app_domain}",
+        # Branding fields consumed by TenantContext.js
+        "primaryColor": branding.get("primaryColor", "#4F46E5"),
+        "logoUrl": branding.get("logoUrl", ""),
+        "welcomeMessage": branding.get("welcomeMessage", ""),
+        "backgroundValue": branding.get("backgroundValue", ""),
+        "secondaryColor": branding.get("secondaryColor", "#FFFFFF"),
     })
 
 

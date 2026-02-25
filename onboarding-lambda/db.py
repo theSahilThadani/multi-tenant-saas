@@ -74,15 +74,15 @@ def get_tenant_user(tenant_id, email):
 # WRITE OPERATIONS
 # ─────────────────────────────────────────────
 
-def create_tenant(name, slug, subdomain, plan):
+def create_tenant(name, slug, subdomain, plan, api_key):
     """Create tenant row. Returns tenant dict with UUID id."""
     conn = get_conn()
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            """INSERT INTO tenants (name, slug, subdomain, plan, status)
-               VALUES (%s, %s, %s, %s, 'PENDING')
-               RETURNING id, name, slug, subdomain, plan, status""",
-            (name, slug, subdomain, plan),
+            """INSERT INTO tenants (name, slug, subdomain, plan, api_key, status)
+               VALUES (%s, %s, %s, %s, %s, 'PENDING')
+               RETURNING id, name, slug, subdomain, plan, api_key, status""",
+            (name, slug, subdomain, plan, api_key),
         )
         return dict(cur.fetchone())
 

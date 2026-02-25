@@ -14,6 +14,7 @@ Routes:
 import os
 import json
 import re
+import uuid
 import boto3
 
 import db
@@ -375,7 +376,8 @@ def handle_create_tenant(event):
 
         # ── STEP 5: CREATE TENANT IN PG ──
         print("[CREATE] Step 5: Create tenant")
-        tenant = db.create_tenant(company_name, slug, subdomain, plan)
+        api_key = uuid.uuid4().hex  # 32-char hex, unique per tenant
+        tenant = db.create_tenant(company_name, slug, subdomain, plan, api_key)
         created_tenant_id = str(tenant["id"])
 
         # ── STEP 6: CREATE COGNITO CLIENT ──
@@ -426,7 +428,7 @@ def handle_create_tenant(event):
             "tenantSlug": slug,
             "displayName": company_name,
             "logoUrl": "",
-            "primaryColor": "#4F46E5",
+            "primaryColor": "#1C3F97",
             "secondaryColor": "#FFFFFF",
             "backgroundType": "gradient",
             "backgroundValue": "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
@@ -470,7 +472,8 @@ def handle_create_tenant(event):
             "plan": plan,
             "status": "ACTIVE",
             "cognitoClientId": created_cognito_client_id,
-            "message": "Workspace created successfully!",
+            "apiKey": api_key,
+            "message": "Workspace created successfully! Save your API key — it grants write access to your workspace.",
         })
 
     except json.JSONDecodeError:

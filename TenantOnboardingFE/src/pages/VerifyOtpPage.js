@@ -2,11 +2,13 @@ import React, { useState, useRef, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import LoadingSpinner from "../components/LoadingSpinner";
 import { verifyOtp, sendOtp, signinVerifyOtp, signinSendOtp } from "../services/api";
+import { useTenant } from "../context/TenantContext";
 import config from "../config";
 
 export default function VerifyOtpPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const tenant = useTenant();
 
   const email = location.state?.email || "";
   const mode = location.state?.mode || "MAIN";
@@ -74,20 +76,15 @@ export default function VerifyOtpPage() {
 
     try {
       if (mode === "TENANT") {
-        // ── TENANT MODE: signin verify ──
-        const result = await signinVerifyOtp(
-          email, code, session, tenantSlugFromState
-        );
-        // Go straight to dashboard (or welcome for now)
-        navigate("/welcome-back", {
+        // ── TENANT MODE (abc.nextgen.com): signin lambda ──
+        const result = await signinVerifyOtp(email, code, session, tenantSlugFromState);
+        navigate("/dashboard", {
           state: {
             email: result.email,
             accessToken: result.accessToken,
-            tenantSlug: result.tenantSlug,
+            tenantSlug: result.tenantSlug || tenantSlugFromState,
             tenantName: result.tenantName,
             role: result.role,
-            dashboardUrl: result.dashboardUrl,
-            fromTenant: true,
           },
         });
       } else {
@@ -157,7 +154,7 @@ export default function VerifyOtpPage() {
   }
 
   const displayName = config.isTenantMode
-    ? config.tenantName
+    ? (tenant.tenantName || location.state?.tenantName || config.APP_NAME)
     : config.APP_NAME;
 
   return (
