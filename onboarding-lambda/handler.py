@@ -31,7 +31,7 @@ def response(status_code, body):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
         },
         "body": json.dumps(body, default=str),
     }
@@ -382,6 +382,9 @@ def handle_create_tenant(event):
 
         # ── STEP 6: CREATE COGNITO CLIENT ──
         print("[CREATE] Step 6: Cognito client")
+        cognito_domain = os.environ.get("COGNITO_DOMAIN", "")
+        callback_url = f"https://{slug}.{app_domain}/auth/callback"
+        logout_url = f"https://{slug}.{app_domain}/login"
         client_resp = cognito.create_user_pool_client(
             UserPoolId=user_pool_id,
             ClientName=f"{slug}-client",
@@ -396,6 +399,15 @@ def handle_create_tenant(event):
                 "RefreshToken": "days",
             },
             PreventUserExistenceErrors="ENABLED",
+            # Hosted UI / OAuth settings (required for SSO federation)
+            AllowedOAuthFlows=["code"],
+            AllowedOAuthScopes=["openid", "email", "profile"],
+            AllowedOAuthFlowsUserPoolClient=True,
+            CallbackURLs=[callback_url],
+            LogoutURLs=[logout_url],
+            SupportedIdentityProviders=["COGNITO"],
+            WriteAttributes=["email", "email_verified", "name", "custom:tenant_id", "custom:role"],
+            ReadAttributes=["email", "email_verified", "name", "sub", "custom:tenant_id", "custom:role"],
         )
         created_cognito_client_id = client_resp["UserPoolClient"]["ClientId"]
         db.update_tenant_client_id(created_tenant_id, created_cognito_client_id)
@@ -492,6 +504,368 @@ def handle_create_tenant(event):
             except Exception:
                 pass
         return response(500, {"error": "INTERNAL_ERROR", "message": str(e)})
+
+
+# ═════════════════════════════════════════════════════
+# ADMIN IDP CONFIG — SHARED AUTH HELPER
+# ═════════════════════════════════════════════════════
+
+def _require_tenant_admin(event):
+    """
+    Verify Bearer token, require custom:role = tenant_admin.
+    Returns (tenant_slug, tenant_dict, None) on success.
+    Returns (None, None, error_response) on failure.
+    """
+    headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    if not auth_header.lower().startswith("bearer "):
+        return None, None, response(401, {"error": "MISSING_TOKEN"})
+
+    access_token = auth_header.split(" ", 1)[1].strip()
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+
+    try:
+        user_info = cognito.get_user(AccessToken=access_token)
+    except cognito.exceptions.NotAuthorizedException:
+        return None, None, response(401, {"error": "INVALID_TOKEN"})
+
+    tenant_slug = ""
+    caller_role = ""
+    for attr in user_info.get("UserAttributes", []):
+        if attr["Name"] == "custom:tenant_id":
+            tenant_slug = attr["Value"]
+        if attr["Name"] == "custom:role":
+            caller_role = attr["Value"]
+
+    if caller_role != "tenant_admin":
+        return None, None, response(403, {
+            "error": "FORBIDDEN",
+            "message": "Only tenant admins can manage SSO settings",
+        })
+
+    tenant = db.get_tenant_by_slug(tenant_slug)
+    if not tenant:
+        return None, None, response(404, {"error": "TENANT_NOT_FOUND"})
+
+    return tenant_slug, tenant, None
+
+
+def _build_safe_idp_response(idp):
+    """Build API-safe IDP config dict (no secrets)."""
+    result = {
+        "configured": True,
+        "idpType": idp["idp_type"],
+        "displayName": idp["display_name"],
+        "cognitoIdpName": idp["cognito_idp_name"],
+        "cognitoLoginEnabled": idp["cognito_login_enabled"],
+        "ssoLoginEnabled": idp["sso_login_enabled"],
+    }
+    if idp["idp_type"] == "oidc":
+        result["oidcIssuerUrl"] = idp["oidc_issuer_url"]
+        result["oidcClientId"] = idp["oidc_client_id"]
+        result["oidcScopes"] = idp["oidc_scopes"]
+    elif idp["idp_type"] == "saml":
+        result["samlMetadataUrl"] = idp["saml_metadata_url"]
+    return result
+
+
+def _update_app_client_idps(user_pool_id, client_id, tenant_slug, app_domain, supported_idps):
+    """Update App Client SupportedIdentityProviders, preserving all other settings."""
+    existing = cognito.describe_user_pool_client(
+        UserPoolId=user_pool_id,
+        ClientId=client_id,
+    )
+    c = existing["UserPoolClient"]
+
+    cognito.update_user_pool_client(
+        UserPoolId=user_pool_id,
+        ClientId=client_id,
+        ClientName=c["ClientName"],
+        ExplicitAuthFlows=c.get("ExplicitAuthFlows", ["ALLOW_USER_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]),
+        AllowedOAuthFlows=c.get("AllowedOAuthFlows") or ["code"],
+        AllowedOAuthScopes=c.get("AllowedOAuthScopes") or ["openid", "email", "profile"],
+        AllowedOAuthFlowsUserPoolClient=True,
+        CallbackURLs=c.get("CallbackURLs") or [f"https://{tenant_slug}.{app_domain}/auth/callback"],
+        LogoutURLs=c.get("LogoutURLs") or [f"https://{tenant_slug}.{app_domain}/login"],
+        WriteAttributes=c.get("WriteAttributes") or ["email", "email_verified", "name", "custom:tenant_id", "custom:role"],
+        ReadAttributes=c.get("ReadAttributes") or ["email", "email_verified", "name", "sub", "custom:tenant_id", "custom:role"],
+        SupportedIdentityProviders=supported_idps,
+    )
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 5: GET IDP CONFIG
+# ═════════════════════════════════════════════════════
+
+def handle_get_idp_config(event):
+    """GET /admin/idp-config"""
+    tenant_slug, tenant, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    idp = db.get_idp_config(str(tenant["id"]))
+    if not idp:
+        return response(200, {"configured": False, "idpType": None})
+
+    return response(200, _build_safe_idp_response(idp))
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 6: SAVE (CREATE / UPDATE) IDP CONFIG
+# ═════════════════════════════════════════════════════
+
+def handle_save_idp_config(event):
+    """POST /admin/idp-config"""
+    tenant_slug, tenant, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    idp_type = body.get("idpType", "").strip().lower()
+    display_name = body.get("displayName", "").strip()
+
+    if idp_type not in ("oidc", "saml"):
+        return response(400, {"error": "INVALID_IDP_TYPE", "message": "idpType must be 'oidc' or 'saml'"})
+    if not display_name:
+        return response(400, {"error": "MISSING_DISPLAY_NAME", "message": "displayName is required"})
+
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+    app_domain = os.environ.get("APP_DOMAIN", "example.com")
+    tenant_id_str = str(tenant["id"])
+
+    # ── Validate type-specific fields ──
+    oidc_client_id = oidc_client_secret = oidc_issuer_url = oidc_scopes = None
+    saml_metadata_url = saml_metadata_xml = None
+    errors = {}
+
+    if idp_type == "oidc":
+        oidc_client_id = body.get("oidcClientId", "").strip()
+        oidc_client_secret = body.get("oidcClientSecret", "").strip()
+        oidc_issuer_url = body.get("oidcIssuerUrl", "").strip().rstrip("/")
+        oidc_scopes = body.get("oidcScopes", "openid email profile").strip()
+
+        if not oidc_client_id:
+            errors["oidcClientId"] = "Required"
+        if not oidc_issuer_url:
+            errors["oidcIssuerUrl"] = "Required"
+        # If no new secret provided, use the existing stored one
+        if not oidc_client_secret:
+            oidc_client_secret = db.get_idp_client_secret(tenant_id_str)
+        if not oidc_client_secret:
+            errors["oidcClientSecret"] = "Required"
+
+    elif idp_type == "saml":
+        saml_metadata_url = body.get("samlMetadataUrl", "").strip()
+        saml_metadata_xml = body.get("samlMetadataXml", "").strip()
+        if not saml_metadata_url and not saml_metadata_xml:
+            errors["samlMetadataUrl"] = "Provide either metadata URL or XML"
+
+    if errors:
+        return response(400, {"error": "VALIDATION_ERROR", "details": errors})
+
+    cognito_idp_name = f"{tenant_slug}-{idp_type}"  # e.g. "xyz-oidc" or "xyz-saml"
+
+    # ── Delete existing Cognito IDP if present ──
+    existing = db.get_idp_config(tenant_id_str)
+    if existing and existing.get("cognito_idp_name"):
+        try:
+            cognito.delete_identity_provider(
+                UserPoolId=user_pool_id,
+                ProviderName=existing["cognito_idp_name"],
+            )
+            print(f"[IDP-CONFIG] Deleted old IDP: {existing['cognito_idp_name']}")
+        except cognito.exceptions.ResourceNotFoundException:
+            pass
+
+    # ── Create new Cognito IDP ──
+    try:
+        if idp_type == "oidc":
+            cognito.create_identity_provider(
+                UserPoolId=user_pool_id,
+                ProviderName=cognito_idp_name,
+                ProviderType="OIDC",
+                ProviderDetails={
+                    "client_id": oidc_client_id,
+                    "client_secret": oidc_client_secret,
+                    "attributes_request_method": "GET",
+                    "oidc_issuer": oidc_issuer_url,
+                    "authorize_scopes": oidc_scopes,
+                },
+                AttributeMapping={
+                    "email": "email",
+                    "username": "sub",
+                    "name": "name",
+                },
+            )
+        elif idp_type == "saml":
+            details = {}
+            if saml_metadata_url:
+                details["MetadataURL"] = saml_metadata_url
+            else:
+                details["MetadataFile"] = saml_metadata_xml
+            cognito.create_identity_provider(
+                UserPoolId=user_pool_id,
+                ProviderName=cognito_idp_name,
+                ProviderType="SAML",
+                ProviderDetails=details,
+                AttributeMapping={
+                    "email": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+                    "username": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier",
+                    "name": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name",
+                },
+            )
+    except Exception as e:
+        print(f"[IDP-CONFIG] Cognito create IDP failed: {str(e)}")
+        return response(400, {"error": "IDP_CREATION_FAILED", "message": str(e)})
+
+    # ── Update App Client SupportedIdentityProviders ──
+    try:
+        _update_app_client_idps(
+            user_pool_id,
+            tenant["cognito_client_id"],
+            tenant_slug,
+            app_domain,
+            ["COGNITO", cognito_idp_name],
+        )
+    except Exception as e:
+        # Rollback the Cognito IDP we just created
+        try:
+            cognito.delete_identity_provider(UserPoolId=user_pool_id, ProviderName=cognito_idp_name)
+        except Exception:
+            pass
+        return response(500, {"error": "APP_CLIENT_UPDATE_FAILED", "message": str(e)})
+
+    # ── Save to DB ──
+    saved = db.save_idp_config(
+        tenant_id=tenant_id_str,
+        idp_type=idp_type,
+        display_name=display_name,
+        cognito_idp_name=cognito_idp_name,
+        oidc_client_id=oidc_client_id,
+        oidc_client_secret=oidc_client_secret,
+        oidc_issuer_url=oidc_issuer_url,
+        oidc_scopes=oidc_scopes,
+        saml_metadata_url=saml_metadata_url,
+        saml_metadata_xml=saml_metadata_xml,
+        cognito_login_enabled=True,
+        sso_login_enabled=True,
+    )
+
+    print(f"[IDP-CONFIG] ✅ SSO configured for {tenant_slug}: {cognito_idp_name}")
+    return response(200, _build_safe_idp_response(saved))
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 7: TOGGLE OTP / SSO LOGIN MODES
+# ═════════════════════════════════════════════════════
+
+def handle_toggle_idp(event):
+    """POST /admin/idp-config/toggle"""
+    tenant_slug, tenant, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    cognito_login_enabled = body.get("cognitoLoginEnabled")
+    sso_login_enabled = body.get("ssoLoginEnabled")
+
+    if cognito_login_enabled is None or sso_login_enabled is None:
+        return response(400, {
+            "error": "MISSING_FIELDS",
+            "message": "cognitoLoginEnabled and ssoLoginEnabled are required",
+        })
+
+    if not cognito_login_enabled and not sso_login_enabled:
+        return response(400, {
+            "error": "LOCKOUT_PREVENTION",
+            "message": "Cannot disable both OTP and SSO — users would be locked out",
+        })
+
+    idp = db.get_idp_config(str(tenant["id"]))
+    if not idp:
+        return response(404, {"error": "IDP_NOT_CONFIGURED"})
+
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+    app_domain = os.environ.get("APP_DOMAIN", "example.com")
+
+    idps = []
+    if cognito_login_enabled:
+        idps.append("COGNITO")
+    if sso_login_enabled:
+        idps.append(idp["cognito_idp_name"])
+
+    try:
+        _update_app_client_idps(
+            user_pool_id,
+            tenant["cognito_client_id"],
+            tenant_slug,
+            app_domain,
+            idps,
+        )
+    except Exception as e:
+        return response(500, {"error": "APP_CLIENT_UPDATE_FAILED", "message": str(e)})
+
+    db.update_idp_login_modes(str(tenant["id"]), cognito_login_enabled, sso_login_enabled)
+
+    print(f"[IDP-TOGGLE] {tenant_slug}: OTP={cognito_login_enabled} SSO={sso_login_enabled}")
+    return response(200, {
+        "cognitoLoginEnabled": cognito_login_enabled,
+        "ssoLoginEnabled": sso_login_enabled,
+    })
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 8: DELETE IDP CONFIG
+# ═════════════════════════════════════════════════════
+
+def handle_delete_idp_config(event):
+    """DELETE /admin/idp-config"""
+    tenant_slug, tenant, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    idp = db.get_idp_config(str(tenant["id"]))
+    if not idp:
+        return response(404, {"error": "IDP_NOT_CONFIGURED"})
+
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+    app_domain = os.environ.get("APP_DOMAIN", "example.com")
+
+    # Delete Cognito IDP
+    try:
+        cognito.delete_identity_provider(
+            UserPoolId=user_pool_id,
+            ProviderName=idp["cognito_idp_name"],
+        )
+    except cognito.exceptions.ResourceNotFoundException:
+        pass
+    except Exception as e:
+        return response(500, {"error": "IDP_DELETE_FAILED", "message": str(e)})
+
+    # Revert App Client to COGNITO only
+    try:
+        _update_app_client_idps(
+            user_pool_id,
+            tenant["cognito_client_id"],
+            tenant_slug,
+            app_domain,
+            ["COGNITO"],
+        )
+    except Exception as e:
+        return response(500, {"error": "APP_CLIENT_UPDATE_FAILED", "message": str(e)})
+
+    db.delete_idp_config(str(tenant["id"]))
+
+    print(f"[IDP-CONFIG] Deleted SSO for {tenant_slug}")
+    return response(200, {"message": "SSO configuration removed. OTP login restored."})
 
 
 # ═════════════════════════════════════════════════════
@@ -635,5 +1009,15 @@ def lambda_handler(event, context):
         return handle_check_slug(event)
     if method == "POST" and path == "/onboarding/tenant":
         return handle_create_tenant(event)
+
+    # Admin SSO routes (require tenant_admin token)
+    if method == "GET" and path == "/admin/idp-config":
+        return handle_get_idp_config(event)
+    if method == "POST" and path == "/admin/idp-config/toggle":
+        return handle_toggle_idp(event)
+    if method == "POST" and path == "/admin/idp-config":
+        return handle_save_idp_config(event)
+    if method == "DELETE" and path == "/admin/idp-config":
+        return handle_delete_idp_config(event)
 
     return response(404, {"error": "NOT_FOUND"})

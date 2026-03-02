@@ -128,3 +128,98 @@ def create_tenant_user(tenant_id, cognito_sub, email, role):
             (tenant_id, cognito_sub, email, role),
         )
         return dict(cur.fetchone())
+
+
+# ─────────────────────────────────────────────
+# IDP CONFIG OPERATIONS
+# ─────────────────────────────────────────────
+
+def get_idp_config(tenant_id):
+    """Get IDP config for a tenant. Returns dict or None."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """SELECT id, tenant_id, idp_type, display_name,
+                      oidc_client_id, oidc_issuer_url, oidc_scopes,
+                      saml_metadata_url,
+                      cognito_idp_name, cognito_login_enabled, sso_login_enabled
+               FROM tenant_idp_configs
+               WHERE tenant_id = %s AND enabled = TRUE""",
+            (tenant_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_idp_client_secret(tenant_id):
+    """Return stored oidc_client_secret for a tenant. Used when updating without re-entering secret."""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT oidc_client_secret FROM tenant_idp_configs WHERE tenant_id = %s AND enabled = TRUE",
+            (tenant_id,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def save_idp_config(tenant_id, idp_type, display_name, cognito_idp_name,
+                    oidc_client_id=None, oidc_client_secret=None,
+                    oidc_issuer_url=None, oidc_scopes=None,
+                    saml_metadata_url=None, saml_metadata_xml=None,
+                    cognito_login_enabled=True, sso_login_enabled=True):
+    """Upsert IDP config row for a tenant."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """INSERT INTO tenant_idp_configs
+                   (tenant_id, idp_type, display_name, cognito_idp_name,
+                    oidc_client_id, oidc_client_secret, oidc_issuer_url, oidc_scopes,
+                    saml_metadata_url, saml_metadata_xml,
+                    cognito_login_enabled, sso_login_enabled)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (tenant_id) DO UPDATE SET
+                   idp_type              = EXCLUDED.idp_type,
+                   display_name          = EXCLUDED.display_name,
+                   cognito_idp_name      = EXCLUDED.cognito_idp_name,
+                   oidc_client_id        = EXCLUDED.oidc_client_id,
+                   oidc_client_secret    = EXCLUDED.oidc_client_secret,
+                   oidc_issuer_url       = EXCLUDED.oidc_issuer_url,
+                   oidc_scopes           = EXCLUDED.oidc_scopes,
+                   saml_metadata_url     = EXCLUDED.saml_metadata_url,
+                   saml_metadata_xml     = EXCLUDED.saml_metadata_xml,
+                   cognito_login_enabled = EXCLUDED.cognito_login_enabled,
+                   sso_login_enabled     = EXCLUDED.sso_login_enabled,
+                   enabled               = TRUE,
+                   updated_at            = NOW()
+               RETURNING id, tenant_id, idp_type, display_name, cognito_idp_name,
+                         oidc_client_id, oidc_issuer_url, oidc_scopes,
+                         saml_metadata_url, cognito_login_enabled, sso_login_enabled""",
+            (tenant_id, idp_type, display_name, cognito_idp_name,
+             oidc_client_id, oidc_client_secret, oidc_issuer_url, oidc_scopes,
+             saml_metadata_url, saml_metadata_xml,
+             cognito_login_enabled, sso_login_enabled),
+        )
+        return dict(cur.fetchone())
+
+
+def delete_idp_config(tenant_id):
+    """Soft-delete IDP config (set enabled=FALSE)."""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE tenant_idp_configs SET enabled = FALSE, updated_at = NOW() WHERE tenant_id = %s",
+            (tenant_id,),
+        )
+
+
+def update_idp_login_modes(tenant_id, cognito_login_enabled, sso_login_enabled):
+    """Toggle OTP / SSO on the IDP config row."""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE tenant_idp_configs
+               SET cognito_login_enabled = %s, sso_login_enabled = %s, updated_at = NOW()
+               WHERE tenant_id = %s AND enabled = TRUE""",
+            (cognito_login_enabled, sso_login_enabled, tenant_id),
+        )

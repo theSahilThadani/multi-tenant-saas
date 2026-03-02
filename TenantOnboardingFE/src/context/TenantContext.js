@@ -16,6 +16,15 @@ export function TenantProvider({ children }) {
     welcomeMessage: '',
     plan: '',
     status: 'UNKNOWN',
+    // Cognito Hosted UI (for SSO PKCE redirect)
+    cognitoClientId: '',
+    cognitoDomain: '',
+    // IDP / SSO
+    idpType: null,
+    idpDisplayName: null,
+    cognitoIdpName: null,
+    cognitoLoginEnabled: true,
+    ssoLoginEnabled: false,
   });
 
   useEffect(() => {
@@ -37,6 +46,15 @@ export function TenantProvider({ children }) {
           welcomeMessage: data.welcomeMessage || '',
           plan: data.plan || '',
           status: data.status || 'ACTIVE',
+          // Cognito Hosted UI
+          cognitoClientId: data.cognitoClientId || '',
+          cognitoDomain: data.cognitoDomain || '',
+          // IDP / SSO
+          idpType: data.idpType || null,
+          idpDisplayName: data.idpDisplayName || null,
+          cognitoIdpName: data.cognitoIdpName || null,
+          cognitoLoginEnabled: data.cognitoLoginEnabled !== false,
+          ssoLoginEnabled: data.ssoLoginEnabled || false,
         });
 
         // Update page title

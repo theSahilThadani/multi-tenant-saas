@@ -82,3 +82,59 @@ export async function getTenantInfo(slug) {
   if (!res.ok) throw { status: res.status, ...data };
   return data;
 }
+
+export async function federatedVerify(code, tenantSlug, codeVerifier, redirectUri) {
+  const res = await fetch(`${SIGNIN_URL}/signin/federated-verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, tenantSlug, codeVerifier, redirectUri }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN IDP CONFIG APIs (onboarding endpoint, tenant_admin only)
+// ─────────────────────────────────────────────
+
+export async function getIdpConfig(accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/admin/idp-config`, {
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+export async function saveIdpConfig(data, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/admin/idp-config`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+  if (!res.ok) throw { status: res.status, ...result };
+  return result;
+}
+
+export async function toggleIdpLoginModes(data, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/admin/idp-config/toggle`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+  if (!res.ok) throw { status: res.status, ...result };
+  return result;
+}
+
+export async function deleteIdpConfig(accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/admin/idp-config`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}

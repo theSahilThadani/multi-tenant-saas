@@ -5,6 +5,25 @@ import LoadingSpinner from "../components/LoadingSpinner";
 import { sendOtp, signinSendOtp } from "../services/api";
 import config from "../config";
 
+// ── PKCE helpers ──
+function generateCodeVerifier() {
+  const array = new Uint8Array(64);
+  window.crypto.getRandomValues(array);
+  return btoa(String.fromCharCode(...array))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+}
+
+async function sha256Base64url(plain) {
+  const data = new TextEncoder().encode(plain);
+  const hash = await window.crypto.subtle.digest("SHA-256", data);
+  return btoa(String.fromCharCode(...new Uint8Array(hash)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+}
+
 // ─────────────────────────────────────────────────────────
 // MAIN SITE: Branded split-screen trial signup / sign-in
 // ─────────────────────────────────────────────────────────
@@ -175,8 +194,33 @@ function TenantLogin() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
 
   const primaryColor = tenant.primaryColor || "#4F46E5";
+
+  async function handleSsoLogin() {
+    setSsoLoading(true);
+    setError("");
+    try {
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = await sha256Base64url(codeVerifier);
+      sessionStorage.setItem("pkce_verifier", codeVerifier);
+
+      const params = new URLSearchParams({
+        client_id: tenant.cognitoClientId,
+        response_type: "code",
+        scope: "openid email profile",
+        redirect_uri: `${window.location.origin}/auth/callback`,
+        identity_provider: tenant.cognitoIdpName,
+        code_challenge: codeChallenge,
+        code_challenge_method: "S256",
+      });
+      window.location.href = `${tenant.cognitoDomain}/oauth2/authorize?${params}`;
+    } catch (err) {
+      setError("Could not initiate SSO. Please try again.");
+      setSsoLoading(false);
+    }
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -253,48 +297,99 @@ function TenantLogin() {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} noValidate>
-              <div className="form-group">
-                <label className="form-label">
-                  Email Address <span className="required">*</span>
-                </label>
-                <input
-                  type="email"
-                  className={`form-input ${error ? "error" : ""}`}
-                  value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value);
-                    if (error) setError("");
-                  }}
-                  placeholder="yourname@company.com"
-                  disabled={loading}
-                  autoFocus
-                  autoComplete="email"
-                />
-                <div className="form-hint">
-                  We'll send a one-time code to this email
+            {/* OTP form — shown when cognitoLoginEnabled */}
+            {tenant.cognitoLoginEnabled !== false && (
+              <form onSubmit={handleSubmit} noValidate>
+                <div className="form-group">
+                  <label className="form-label">
+                    Email Address <span className="required">*</span>
+                  </label>
+                  <input
+                    type="email"
+                    className={`form-input ${error ? "error" : ""}`}
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (error) setError("");
+                    }}
+                    placeholder="yourname@company.com"
+                    disabled={loading}
+                    autoFocus={!tenant.ssoLoginEnabled}
+                    autoComplete="email"
+                  />
+                  <div className="form-hint">
+                    We'll send a one-time code to this email
+                  </div>
                 </div>
-              </div>
 
-              <div className="form-group" style={{ marginTop: 8 }}>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={loading || !email.trim()}
-                  style={{ background: primaryColor }}
-                >
-                  {loading ? (
-                    <>
-                      <LoadingSpinner white size={18} />
-                      Sending code...
-                    </>
-                  ) : (
-                    "Continue with Email →"
-                  )}
-                </button>
-              </div>
-            </form>
+                <div className="form-group" style={{ marginTop: 8 }}>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={loading || !email.trim()}
+                    style={{ background: primaryColor }}
+                  >
+                    {loading ? (
+                      <>
+                        <LoadingSpinner white size={18} />
+                        Sending code...
+                      </>
+                    ) : (
+                      "Continue with Email →"
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
 
+            {/* Divider — shown when both OTP and SSO are active */}
+            {tenant.cognitoLoginEnabled !== false && tenant.ssoLoginEnabled && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 12,
+                margin: "20px 0", color: "var(--gray-400)", fontSize: 13,
+              }}>
+                <div style={{ flex: 1, height: 1, background: "var(--gray-200)" }} />
+                <span>or</span>
+                <div style={{ flex: 1, height: 1, background: "var(--gray-200)" }} />
+              </div>
+            )}
+
+            {/* SSO button — shown when ssoLoginEnabled */}
+            {tenant.ssoLoginEnabled && (
+              <button
+                type="button"
+                onClick={handleSsoLogin}
+                disabled={ssoLoading}
+                style={{
+                  width: "100%",
+                  padding: "12px 24px",
+                  border: `2px solid ${primaryColor}`,
+                  borderRadius: "var(--radius)",
+                  background: "white",
+                  color: primaryColor,
+                  fontWeight: 600,
+                  fontSize: 15,
+                  cursor: ssoLoading ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 10,
+                  transition: "all 0.15s",
+                }}
+              >
+                {ssoLoading ? (
+                  <>
+                    <LoadingSpinner size={18} />
+                    Redirecting...
+                  </>
+                ) : (
+                  <>
+                    <span style={{ fontSize: 18 }}>🔐</span>
+                    {tenant.idpDisplayName || "Sign in with SSO"}
+                  </>
+                )}
+              </button>
+            )}
             <div
               style={{
                 textAlign: "center",

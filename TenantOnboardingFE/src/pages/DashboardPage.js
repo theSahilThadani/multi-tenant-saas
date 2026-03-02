@@ -67,7 +67,8 @@ export default function DashboardPage() {
   const isAdmin =
     userData.role === "admin" ||
     userData.role === "ADMIN" ||
-    userData.role === "workspace_admin";
+    userData.role === "workspace_admin" ||
+    userData.role === "tenant_admin";
 
   return (
     <div className="dashboard-wrapper">
@@ -179,7 +180,9 @@ export default function DashboardPage() {
               </div>
               <div className="info-row">
                 <span className="info-label">Auth Method</span>
-                <span className="info-value">Passwordless OTP</span>
+                <span className="info-value">
+                  {userData.authMethod === "SSO" ? "SSO / Federated" : "Passwordless OTP"}
+                </span>
               </div>
               <div className="info-row">
                 <span className="info-label">Status</span>
@@ -229,6 +232,41 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+
+        {/* Admin Settings Link */}
+        {isAdmin && (
+          <div
+            style={{
+              marginTop: 24,
+              padding: "16px 20px",
+              background: "white",
+              border: "1px solid var(--gray-200)",
+              borderRadius: "var(--radius-lg)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 22 }}>⚙️</span>
+              <div>
+                <div style={{ fontWeight: 600, color: "var(--gray-800)" }}>
+                  SSO / Identity Provider Settings
+                </div>
+                <div style={{ fontSize: 13, color: "var(--gray-500)", marginTop: 2 }}>
+                  Configure Google, Okta, Azure AD or any OIDC/SAML provider for your workspace
+                </div>
+              </div>
+            </div>
+            <button
+              className="btn btn-secondary"
+              onClick={() => navigate("/admin/settings")}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              Manage SSO →
+            </button>
+          </div>
+        )}
 
         {/* Footer note */}
         <div

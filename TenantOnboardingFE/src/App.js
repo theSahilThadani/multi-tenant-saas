@@ -7,6 +7,8 @@ import SignupPage from './pages/SignupPage';
 import WelcomeBackPage from './pages/WelcomeBackPage';
 import OnboardingComplete from './pages/OnboardingComplete';
 import DashboardPage from './pages/DashboardPage';
+import OAuthCallbackPage from './pages/OAuthCallbackPage';
+import AdminSettingsPage from './pages/AdminSettingsPage';
 import AccessDeniedPage from './pages/AccessDeniedPage';
 import NotFoundPage from './pages/NotFoundPage';
 import LoadingSpinner from './components/LoadingSpinner';
@@ -52,6 +54,8 @@ function AppRoutes() {
       <Route path="/welcome-back" element={<WelcomeBackPage />} />
       <Route path="/onboarding/complete" element={<OnboardingComplete />} />
       <Route path="/dashboard" element={<DashboardPage />} />
+      <Route path="/auth/callback" element={<OAuthCallbackPage />} />
+      <Route path="/admin/settings" element={<AdminSettingsPage />} />
       <Route path="/access-denied" element={<AccessDeniedPage />} />
       <Route path="/not-found" element={<NotFoundPage />} />
       <Route path="/" element={<Navigate to="/login" replace />} />

@@ -13,6 +13,9 @@ Routes:
 import os
 import json
 import re
+import base64
+import urllib.request
+import urllib.parse
 import boto3
 
 import db
@@ -29,7 +32,7 @@ def response(status_code, body):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
         },
         "body": json.dumps(body, default=str),
     }
@@ -272,6 +275,13 @@ def handle_tenant_info(event):
         except Exception as e:
             print(f"[TENANT-INFO] WARNING: Could not fetch branding from S3: {str(e)}")
 
+    # ── Fetch IDP config ──
+    idp = None
+    try:
+        idp = db.get_idp_config(str(tenant["id"]))
+    except Exception as e:
+        print(f"[TENANT-INFO] WARNING: Could not fetch IDP config: {str(e)}")
+
     return response(200, {
         "tenantSlug": tenant["slug"],
         "tenantName": branding.get("displayName") or tenant["name"],
@@ -284,6 +294,160 @@ def handle_tenant_info(event):
         "welcomeMessage": branding.get("welcomeMessage", ""),
         "backgroundValue": branding.get("backgroundValue", ""),
         "secondaryColor": branding.get("secondaryColor", "#FFFFFF"),
+        # Cognito Hosted UI fields (for PKCE / SSO redirect)
+        "cognitoClientId": tenant.get("cognito_client_id", ""),
+        "cognitoDomain": os.environ.get("COGNITO_DOMAIN", ""),
+        # IDP / SSO fields
+        "idpType": idp["idp_type"] if idp else None,
+        "idpDisplayName": idp["display_name"] if idp else None,
+        "cognitoIdpName": idp["cognito_idp_name"] if idp else None,
+        "cognitoLoginEnabled": idp["cognito_login_enabled"] if idp else True,
+        "ssoLoginEnabled": idp["sso_login_enabled"] if idp else False,
+    })
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 4: FEDERATED VERIFY (SSO CALLBACK)
+# ═════════════════════════════════════════════════════
+
+def handle_federated_verify(event):
+    """
+    POST /signin/federated-verify
+    Body: { code, tenantSlug, codeVerifier, redirectUri }
+
+    Called by OAuthCallbackPage after Cognito Hosted UI redirects back.
+    Exchanges the auth code for tokens, validates tenant isolation,
+    and JIT-provisions the user in tenant_users on first login.
+    """
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    code = body.get("code", "").strip()
+    tenant_slug = body.get("tenantSlug", "").strip().lower()
+    code_verifier = body.get("codeVerifier", "").strip()
+    redirect_uri = body.get("redirectUri", "").strip()
+
+    if not code or not tenant_slug or not code_verifier or not redirect_uri:
+        return response(400, {"error": "MISSING_FIELDS", "message": "code, tenantSlug, codeVerifier, redirectUri are required"})
+
+    tenant = db.get_tenant_by_slug(tenant_slug)
+    if not tenant:
+        return response(404, {"error": "TENANT_NOT_FOUND"})
+
+    idp = db.get_idp_config(str(tenant["id"]))
+    if not idp or not idp.get("sso_login_enabled"):
+        return response(400, {"error": "SSO_NOT_ENABLED", "message": "SSO is not configured for this workspace"})
+
+    cognito_domain = os.environ.get("COGNITO_DOMAIN", "")
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+    app_domain = os.environ.get("APP_DOMAIN", "motadata.com")
+
+    # ── Exchange auth code for tokens ──
+    token_data = urllib.parse.urlencode({
+        "grant_type": "authorization_code",
+        "client_id": tenant["cognito_client_id"],
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{cognito_domain}/oauth2/token",
+            data=token_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            token_response = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"[FEDERATED-VERIFY] Code exchange failed: {str(e)}")
+        return response(400, {"error": "CODE_EXCHANGE_FAILED", "message": str(e)})
+
+    access_token = token_response.get("access_token")
+    id_token = token_response.get("id_token")
+    refresh_token = token_response.get("refresh_token", "")
+
+    if not id_token or not access_token:
+        return response(400, {"error": "NO_ID_TOKEN"})
+
+    # ── Decode id_token payload (no sig verification — Cognito issued it to our client) ──
+    try:
+        parts = id_token.split(".")
+        padding = "=" * (4 - len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + padding).decode())
+    except Exception as e:
+        return response(400, {"error": "TOKEN_DECODE_FAILED", "message": str(e)})
+
+    email = payload.get("email", "").lower()
+    sub = payload.get("sub", "")
+    aud = payload.get("aud", "")
+    cognito_username = payload.get("cognito:username", "") or email
+
+    if not email:
+        return response(400, {"error": "EMAIL_MISSING", "message": "IDP did not return an email address"})
+
+    # ── Verify token is for THIS tenant's App Client ──
+    if aud != tenant["cognito_client_id"]:
+        return response(403, {"error": "TOKEN_MISMATCH", "message": "Token not issued for this workspace"})
+
+    # ── Check tenant membership via the access_token ──
+    try:
+        user_info = cognito.get_user(AccessToken=access_token)
+        existing_tenant_id = ""
+        for attr in user_info.get("UserAttributes", []):
+            if attr["Name"] == "custom:tenant_id":
+                existing_tenant_id = attr["Value"]
+
+        if existing_tenant_id and existing_tenant_id != tenant_slug:
+            return response(403, {
+                "error": "WRONG_WORKSPACE",
+                "message": f"This account belongs to workspace '{existing_tenant_id}'",
+            })
+    except Exception as e:
+        print(f"[FEDERATED-VERIFY] get_user warning: {str(e)}")
+        existing_tenant_id = ""
+
+    # ── JIT: set tenant attributes on first federated login ──
+    if not existing_tenant_id:
+        try:
+            cognito.admin_update_user_attributes(
+                UserPoolId=user_pool_id,
+                Username=cognito_username,
+                UserAttributes=[
+                    {"Name": "custom:tenant_id", "Value": tenant_slug},
+                    {"Name": "custom:role", "Value": "user"},
+                ],
+            )
+        except Exception as e:
+            print(f"[FEDERATED-VERIFY] WARNING: Could not set tenant attributes: {str(e)}")
+
+    # ── Upsert user in tenant_users ──
+    try:
+        db.upsert_tenant_user_by_sub(str(tenant["id"]), sub, email, "user")
+    except Exception as e:
+        print(f"[FEDERATED-VERIFY] WARNING: upsert tenant_user failed: {str(e)}")
+
+    # ── Get final role from DB ──
+    user = db.get_tenant_user(str(tenant["id"]), email)
+    user_role = user.get("role", "user") if user else "user"
+
+    print(f"[FEDERATED-VERIFY] ✅ {email} | tenant: {tenant_slug} | role: {user_role}")
+
+    return response(200, {
+        "verified": True,
+        "email": email,
+        "accessToken": access_token,
+        "idToken": id_token,
+        "refreshToken": refresh_token,
+        "tenantSlug": tenant_slug,
+        "tenantName": tenant.get("name", ""),
+        "tenantPlan": tenant.get("plan", ""),
+        "role": user_role,
+        "authMethod": "SSO",
+        "dashboardUrl": f"https://{tenant_slug}.{app_domain}/dashboard",
     })
 
 
@@ -305,5 +469,7 @@ def lambda_handler(event, context):
         return handle_verify_otp(event)
     if method == "GET" and path == "/signin/tenant-info":
         return handle_tenant_info(event)
+    if method == "POST" and path == "/signin/federated-verify":
+        return handle_federated_verify(event)
 
     return response(404, {"error": "NOT_FOUND"})
