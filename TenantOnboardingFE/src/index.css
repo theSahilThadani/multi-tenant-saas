@@ -1256,3 +1256,479 @@ body {
     display: none;
   }
 }
+
+/* ============================================================
+   WEBSOCKET CONSOLE
+   ============================================================ */
+
+.ws-console-wrapper {
+  min-height: 100vh;
+  background: var(--gray-50);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top Bar */
+.ws-console-topbar {
+  background: white;
+  border-bottom: 1px solid var(--gray-200);
+  padding: 0 32px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.ws-console-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ws-console-topbar-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--gray-900);
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ws-console-topbar-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gray-900);
+  letter-spacing: -0.3px;
+}
+
+.ws-console-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Status Badge */
+.ws-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 14px;
+  border-radius: 100px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ws-status-connected {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.ws-status-connecting {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+
+.ws-status-disconnected {
+  background: var(--gray-100);
+  color: var(--gray-500);
+}
+
+/* Connection Panel */
+.ws-connection-panel {
+  margin: 24px 32px 0;
+  background: white;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.ws-connection-header {
+  margin-bottom: 16px;
+}
+
+.ws-connection-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gray-900);
+  margin-bottom: 2px;
+}
+
+.ws-connection-header p {
+  font-size: 14px;
+  color: var(--gray-500);
+}
+
+.ws-connection-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ws-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ws-status-dot-connected {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-light);
+}
+
+.ws-status-dot-connecting {
+  background: var(--warning);
+  animation: pulse 1.2s ease infinite;
+}
+
+.ws-status-dot-disconnected {
+  background: var(--gray-300);
+}
+
+.ws-url-input {
+  flex: 1;
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  font-size: 13px !important;
+}
+
+/* Auth Token Row */
+.ws-auth-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.ws-auth-input-wrap {
+  flex: 1;
+}
+
+.ws-auth-input-wrap .form-label {
+  margin-bottom: 4px;
+}
+
+.ws-token-input {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  font-size: 13px !important;
+}
+
+.ws-auth-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 100px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-bottom: 1px;
+}
+
+.ws-auth-sending {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+
+.ws-auth-authenticated {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.ws-auth-failed {
+  background: var(--error-light);
+  color: var(--error);
+}
+
+/* Console Buttons */
+.ws-btn {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: var(--radius);
+  white-space: nowrap;
+}
+
+.ws-btn-connect {
+  background: var(--gray-900);
+  color: white;
+}
+
+.ws-btn-connect:hover:not(:disabled) {
+  background: var(--gray-700);
+}
+
+.ws-btn-connect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ws-btn-disconnect {
+  background: white;
+  color: var(--gray-700);
+  border: 1.5px solid var(--gray-300);
+}
+
+.ws-btn-disconnect:hover:not(:disabled) {
+  background: var(--gray-50);
+  border-color: var(--gray-400);
+}
+
+.ws-btn-disconnect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ws-btn-clear {
+  background: white;
+  color: var(--gray-700);
+  border: 1.5px solid var(--gray-300);
+}
+
+.ws-btn-clear:hover {
+  background: var(--gray-50);
+  border-color: var(--gray-400);
+}
+
+/* Main Two-Column Layout */
+.ws-main {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 24px;
+  padding: 24px 32px 32px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Action Builder Panel */
+.ws-panel-card {
+  background: white;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-sm);
+}
+
+.ws-panel-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gray-900);
+  margin-bottom: 20px;
+  letter-spacing: -0.3px;
+}
+
+.ws-request-id-input {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  font-size: 13px !important;
+  color: var(--gray-500) !important;
+}
+
+.ws-payload-textarea {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  font-size: 13px !important;
+  resize: vertical;
+  min-height: 140px;
+}
+
+.ws-send-btn {
+  margin-top: 4px;
+}
+
+/* Message Log */
+.ws-message-log {
+  background: white;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - 240px);
+}
+
+.ws-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--gray-400);
+}
+
+.ws-empty-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.ws-empty-state p {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--gray-500);
+  margin-bottom: 4px;
+}
+
+.ws-empty-state span {
+  font-size: 13px;
+  color: var(--gray-400);
+}
+
+/* Individual Message */
+.ws-msg {
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ws-msg-status {
+  background: var(--info-light);
+  border: 1px solid #BFDBFE;
+}
+
+.ws-msg-request {
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+}
+
+.ws-msg-sent {
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+}
+
+.ws-msg-response {
+  background: #F0FDF4;
+  border: 1px solid #BBF7D0;
+}
+
+.ws-msg-event {
+  background: #F0FDF4;
+  border: 1px solid #BBF7D0;
+}
+
+.ws-msg-error {
+  background: var(--error-light);
+  border: 1px solid #FECACA;
+}
+
+.ws-msg-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 0;
+  flex-wrap: wrap;
+}
+
+.ws-msg-time {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gray-500);
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+}
+
+.ws-msg-type-badge {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--gray-600);
+}
+
+.ws-msg-type-status {
+  color: var(--info);
+}
+
+.ws-msg-type-request {
+  color: var(--gray-600);
+}
+
+.ws-msg-type-response {
+  color: var(--success);
+}
+
+.ws-msg-type-event {
+  color: var(--success);
+}
+
+.ws-msg-type-error {
+  color: var(--error);
+}
+
+.ws-msg-meta {
+  font-size: 12px;
+  color: var(--gray-500);
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+}
+
+.ws-msg-body {
+  margin: 8px 14px 12px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: var(--radius-sm);
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--gray-800);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+/* ============================================================
+   RESPONSIVE — WebSocket Console
+   ============================================================ */
+
+@media (max-width: 960px) {
+  .ws-main {
+    grid-template-columns: 1fr;
+    padding: 16px 20px 24px;
+  }
+
+  .ws-connection-panel {
+    margin: 16px 20px 0;
+    padding: 20px;
+  }
+
+  .ws-connection-controls {
+    flex-wrap: wrap;
+  }
+
+  .ws-url-input {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .ws-console-topbar {
+    padding: 0 20px;
+  }
+
+  .ws-message-log {
+    max-height: 50vh;
+  }
+}
+
+@media (max-width: 600px) {
+  .ws-connection-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ws-btn {
+    width: 100%;
+    text-align: center;
+  }
+
+  .ws-main {
+    padding: 12px 16px 20px;
+  }
+
+  .ws-connection-panel {
+    margin: 12px 16px 0;
+  }
+}

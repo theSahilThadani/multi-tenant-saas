@@ -27,7 +27,7 @@ function getSlugFromHostname() {
     hostname === 'localhost' ||
     hostname === '127.0.0.1'
   ) {
-    return 'default';
+    return 'bigdata';
   }
 
   if (hostname.endsWith('.' + APP_DOMAIN)) {
@@ -35,7 +35,7 @@ function getSlugFromHostname() {
     return hostname.slice(0, hostname.length - APP_DOMAIN.length - 1);
   }
 
-  return 'default';
+  return 'bigdata';
 }
 
 // ── Layer 2: cookie override (set by CloudFront Function on viewer-response) ─
@@ -51,6 +51,7 @@ const slugFromCookie = getCookieValue('tenant_slug');
 // has run at least once). Fallback to hostname on very first load.
 const tenantSlug = slugFromCookie || slugFromHostname;
 const isTenantMode = tenantSlug !== 'default';
+// const isTenantMode = true;
 
 const config = {
   ONBOARDING_API_URL:

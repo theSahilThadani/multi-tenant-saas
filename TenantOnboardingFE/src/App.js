@@ -11,6 +11,7 @@ import OAuthCallbackPage from './pages/OAuthCallbackPage';
 import AdminSettingsPage from './pages/AdminSettingsPage';
 import AccessDeniedPage from './pages/AccessDeniedPage';
 import NotFoundPage from './pages/NotFoundPage';
+import WebSocketConsolePage from './pages/WebSocketConsolePage';
 import LoadingSpinner from './components/LoadingSpinner';
 
 function AppRoutes() {
@@ -57,6 +58,7 @@ function AppRoutes() {
       <Route path="/auth/callback" element={<OAuthCallbackPage />} />
       <Route path="/admin/settings" element={<AdminSettingsPage />} />
       <Route path="/access-denied" element={<AccessDeniedPage />} />
+      <Route path="/ws-console" element={<WebSocketConsolePage />} />
       <Route path="/not-found" element={<NotFoundPage />} />
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
