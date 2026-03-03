@@ -8,6 +8,7 @@ import {
   toggleIdpLoginModes,
   deleteIdpConfig,
 } from "../services/api";
+import { getTokensFromSession } from "../utils/authSession";
 
 export default function AdminSettingsPage() {
   const navigate = useNavigate();
@@ -57,8 +58,14 @@ export default function AdminSettingsPage() {
         navigate("/access-denied");
         return;
       }
+      const sessionTokens = getTokensFromSession();
+      const token = data.accessToken || sessionTokens.accessToken || "";
+      if (!token) {
+        navigate("/login");
+        return;
+      }
       setUserData(data);
-      setAccessToken(data.accessToken);
+      setAccessToken(token);
     } catch {
       navigate("/login");
     }

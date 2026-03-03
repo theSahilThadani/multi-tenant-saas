@@ -1,6 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTenant } from "../context/TenantContext";
+import {
+  clearTokensFromSession,
+  getTokensFromSession,
+  saveTokensToSession,
+} from "../utils/authSession";
 import config from "../config";
 
 export default function DashboardPage() {
@@ -12,21 +17,37 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const stateData = location.state;
+    const sessionTokens = getTokensFromSession();
+
     if (stateData?.email) {
       const data = {
         email: stateData.email,
-        accessToken: stateData.accessToken || "",
+        accessToken: stateData.accessToken || sessionTokens.accessToken || "",
+        idToken: stateData.idToken || sessionTokens.idToken || "",
+        refreshToken: stateData.refreshToken || sessionTokens.refreshToken || "",
         role: stateData.role || "member",
         tenantSlug: stateData.tenantSlug || tenant.tenantSlug,
         tenantName: stateData.tenantName || tenant.tenantName,
+        authMethod: stateData.authMethod || "OTP",
       };
+      saveTokensToSession(data);
       sessionStorage.setItem("dashboard_user", JSON.stringify(data));
       setUserData(data);
     } else {
       const saved = sessionStorage.getItem("dashboard_user");
       if (saved) {
         try {
-          setUserData(JSON.parse(saved));
+          const parsed = JSON.parse(saved);
+          const data = {
+            ...parsed,
+            accessToken: parsed.accessToken || sessionTokens.accessToken || "",
+            idToken: parsed.idToken || sessionTokens.idToken || "",
+            refreshToken: parsed.refreshToken || sessionTokens.refreshToken || "",
+            authMethod: parsed.authMethod || "OTP",
+          };
+          saveTokensToSession(data);
+          sessionStorage.setItem("dashboard_user", JSON.stringify(data));
+          setUserData(data);
         } catch {
           navigate("/login");
         }
@@ -37,6 +58,7 @@ export default function DashboardPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSignOut() {
+    clearTokensFromSession();
     sessionStorage.removeItem("dashboard_user");
     navigate("/login");
   }
@@ -93,6 +115,17 @@ export default function DashboardPage() {
             </div>
             <span className="user-email-label">{userData.email}</span>
           </div>
+          <button
+            className="btn-signout"
+            onClick={() => navigate("/ws-console")}
+            style={{
+              background: "var(--primary-50)",
+              color: "var(--primary-700)",
+              borderColor: "var(--primary-100)",
+            }}
+          >
+            WS Console
+          </button>
           <button className="btn-signout" onClick={handleSignOut}>
             Sign out
           </button>

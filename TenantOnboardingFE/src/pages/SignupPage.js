@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import SlugChecker from "../components/SlugChecker";
 import LoadingSpinner from "../components/LoadingSpinner";
 import { createTenant } from "../services/api";
+import { getTokensFromSession } from "../utils/authSession";
 import config from "../config";
 
 const PLANS = [
@@ -28,9 +29,10 @@ const PLANS = [
 export default function SignupPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const sessionTokens = getTokensFromSession();
 
   const email = location.state?.email || "";
-  const accessToken = location.state?.accessToken || "";
+  const accessToken = location.state?.accessToken || sessionTokens.accessToken || "";
   const verified = location.state?.verified || false;
 
   useEffect(() => {

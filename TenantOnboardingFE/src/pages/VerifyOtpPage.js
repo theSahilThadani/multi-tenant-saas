@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import LoadingSpinner from "../components/LoadingSpinner";
 import { verifyOtp, sendOtp, signinVerifyOtp, signinSendOtp } from "../services/api";
 import { useTenant } from "../context/TenantContext";
+import { saveTokensToSession } from "../utils/authSession";
 import config from "../config";
 
 export default function VerifyOtpPage() {
@@ -12,7 +13,6 @@ export default function VerifyOtpPage() {
 
   const email = location.state?.email || "";
   const mode = location.state?.mode || "MAIN";
-  const hasTenantFromSendOtp = location.state?.hasTenant || false;
   const tenantSlugFromState = location.state?.tenantSlug || "";
 
   const [session, setSession] = useState(location.state?.session || "");
@@ -78,18 +78,23 @@ export default function VerifyOtpPage() {
       if (mode === "TENANT") {
         // ── TENANT MODE (abc.nextgen.com): signin lambda ──
         const result = await signinVerifyOtp(email, code, session, tenantSlugFromState);
+        saveTokensToSession(result);
         navigate("/dashboard", {
           state: {
             email: result.email,
             accessToken: result.accessToken,
+            idToken: result.idToken,
+            refreshToken: result.refreshToken,
             tenantSlug: result.tenantSlug || tenantSlugFromState,
             tenantName: result.tenantName,
             role: result.role,
+            authMethod: "OTP",
           },
         });
       } else {
         // ── MAIN MODE: onboarding verify ──
         const result = await verifyOtp(email, code, session);
+        saveTokensToSession(result);
 
         if (result.hasTenant) {
           // Existing user → welcome back
@@ -97,6 +102,8 @@ export default function VerifyOtpPage() {
             state: {
               email: result.email,
               accessToken: result.accessToken,
+              idToken: result.idToken,
+              refreshToken: result.refreshToken,
               tenantSlug: result.tenantSlug,
               tenantName: result.tenantName,
               tenantRole: result.tenantRole,
@@ -110,6 +117,8 @@ export default function VerifyOtpPage() {
             state: {
               email: result.email,
               accessToken: result.accessToken,
+              idToken: result.idToken,
+              refreshToken: result.refreshToken,
               verified: true,
             },
           });

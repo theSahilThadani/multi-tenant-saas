@@ -4,15 +4,17 @@ import StepIndicator from "../components/StepIndicator";
 import SlugChecker from "../components/SlugChecker";
 import LoadingSpinner from "../components/LoadingSpinner";
 import { createTenant } from "../services/api";
+import { getTokensFromSession } from "../utils/authSession";
 import config from "../config";
 
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const sessionTokens = getTokensFromSession();
 
   // Get verified data from OTP step
   const email = location.state?.email || "";
-  const accessToken = location.state?.accessToken || "";
+  const accessToken = location.state?.accessToken || sessionTokens.accessToken || "";
   const verified = location.state?.verified || false;
 
   // Redirect if not verified

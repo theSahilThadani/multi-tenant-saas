@@ -1,4 +1,5 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { getTokensFromSession } from '../utils/authSession';
 
 const CONNECTION_STATES = {
   DISCONNECTED: 'disconnected',
@@ -76,7 +77,7 @@ function extractMessageMeta(msg) {
 
 export default function WebSocketConsolePage() {
   const [wsUrl, setWsUrl] = useState('ws://alb-demo-nextgen-533659118.us-east-2.elb.amazonaws.com:8080/ws');
-  const [authToken, setAuthToken] = useState('');
+  const [authToken, setAuthToken] = useState(() => getTokensFromSession().idToken);
   const [connectionState, setConnectionState] = useState(CONNECTION_STATES.DISCONNECTED);
   const [authState, setAuthState] = useState('none'); // none | sending | authenticated | failed
   const [messages, setMessages] = useState([]);
@@ -86,19 +87,17 @@ export default function WebSocketConsolePage() {
   const [presetIndex, setPresetIndex] = useState(0);
 
   const socketRef = useRef(null);
-  const messagesEndRef = useRef(null);
-  const authTokenRef = useRef('');
+  const messageLogRef = useRef(null);
 
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 50);
-  }, []);
+  useEffect(() => {
+    const log = messageLogRef.current;
+    if (!log) return;
+    log.scrollTop = log.scrollHeight;
+  }, [messages.length]);
 
   const addMessage = useCallback((msg) => {
     setMessages((prev) => [...prev, { ...msg, id: Date.now() + Math.random(), timestamp: new Date() }]);
-    scrollToBottom();
-  }, [scrollToBottom]);
+  }, []);
 
   const handleConnect = useCallback(() => {
     if (!wsUrl.trim()) return;
@@ -119,17 +118,26 @@ export default function WebSocketConsolePage() {
         label: 'ws.connected',
       });
 
-      // Auto-send auth.init with token on connect
-      const token = authTokenRef.current;
-      if (token.trim()) {
+      // Auto-send authentication with sessionStorage idToken on connect
+      const token = (getTokensFromSession().idToken || '').trim();
+      setAuthToken(token);
+      if (token) {
         setAuthState('sending');
-        const authMsg = JSON.stringify({ action: 'auth.init', token });
+        const authMsg = JSON.stringify({ action: 'authentication', token });
         ws.send(authMsg);
         addMessage({
           direction: 'sent',
           type: 'request',
           raw: authMsg,
-          label: 'auth.init',
+          label: 'authentication',
+        });
+      } else {
+        setAuthState('failed');
+        addMessage({
+          direction: 'received',
+          type: 'error',
+          raw: JSON.stringify({ message: 'No idToken found in sessionStorage' }),
+          label: 'authentication',
         });
       }
     };
@@ -191,21 +199,21 @@ export default function WebSocketConsolePage() {
   }, []);
 
   const handleSend = useCallback(() => {
-    if (!socketRef.current || connectionState !== CONNECTION_STATES.CONNECTED) return;
-
-    const message = JSON.stringify({
+    const message = (payload || "").trim() || JSON.stringify({
       action,
       request_id: requestId,
-      ...JSON.parse(payload || '{}'),
     });
 
     try {
+      if (!socketRef.current) {
+        throw new Error("WebSocket is not connected");
+      }
       socketRef.current.send(message);
       addMessage({
         direction: 'sent',
         type: 'request',
         raw: message,
-        label: action,
+        label: action || 'custom',
       });
       setRequestId(generateRequestId());
     } catch (err) {
@@ -216,7 +224,7 @@ export default function WebSocketConsolePage() {
         label: 'send.error',
       });
     }
-  }, [action, requestId, payload, connectionState, addMessage]);
+  }, [action, requestId, payload, addMessage]);
 
   const handlePresetChange = (e) => {
     const idx = Number(e.target.value);
@@ -227,9 +235,6 @@ export default function WebSocketConsolePage() {
       setPayload(preset.payload || '{}');
     }
   };
-
-  // Keep ref in sync so the onopen callback sees latest token value
-  authTokenRef.current = authToken;
 
   const isConnected = connectionState === CONNECTION_STATES.CONNECTED;
   const isConnecting = connectionState === CONNECTION_STATES.CONNECTING;
@@ -293,17 +298,16 @@ export default function WebSocketConsolePage() {
         </div>
 
         {/* Auth Token */}
-        <div className="ws-auth-row">
+        {/* <div className="ws-auth-row">
           <div className="ws-auth-input-wrap">
-            <label className="form-label" htmlFor="ws-auth-token">Auth Token</label>
+            <label className="form-label" htmlFor="ws-auth-token">Session idToken</label>
             <input
               id="ws-auth-token"
               className="form-input ws-token-input"
               type="password"
-              placeholder="Paste JWT or access token (sent as auth.init on connect)"
+              placeholder="Loaded from sessionStorage.idToken and sent on connect"
               value={authToken}
-              onChange={(e) => setAuthToken(e.target.value)}
-              disabled={isConnected}
+              readOnly
             />
           </div>
           {authState !== 'none' && (
@@ -313,7 +317,7 @@ export default function WebSocketConsolePage() {
               {authState === 'failed' && 'Auth Failed'}
             </span>
           )}
-        </div>
+        </div> */}
       </div>
 
       {/* Main Content */}
@@ -323,7 +327,7 @@ export default function WebSocketConsolePage() {
           <div className="ws-panel-card">
             <h3 className="ws-panel-title">Action Builder</h3>
 
-            <div className="form-group">
+            {/* <div className="form-group">
               <label className="form-label">Preset actions</label>
               <select
                 className="form-select"
@@ -334,9 +338,9 @@ export default function WebSocketConsolePage() {
                   <option key={preset.label} value={idx}>{preset.label}</option>
                 ))}
               </select>
-            </div>
+            </div> */}
 
-            <div className="form-group">
+            {/* <div className="form-group">
               <label className="form-label">Action</label>
               <input
                 className="form-input"
@@ -345,9 +349,9 @@ export default function WebSocketConsolePage() {
                 value={action}
                 onChange={(e) => setAction(e.target.value)}
               />
-            </div>
+            </div> */}
 
-            <div className="form-group">
+            {/* <div className="form-group">
               <label className="form-label">request_id</label>
               <input
                 className="form-input ws-request-id-input"
@@ -355,7 +359,7 @@ export default function WebSocketConsolePage() {
                 value={requestId}
                 onChange={(e) => setRequestId(e.target.value)}
               />
-            </div>
+            </div> */}
 
             <div className="form-group">
               <label className="form-label">Payload JSON</label>
@@ -371,7 +375,6 @@ export default function WebSocketConsolePage() {
             <button
               className="btn btn-primary ws-send-btn"
               onClick={handleSend}
-              disabled={!isConnected || !action.trim()}
             >
               Send
             </button>
@@ -379,7 +382,7 @@ export default function WebSocketConsolePage() {
         </div>
 
         {/* Right: Message Log */}
-        <div className="ws-message-log">
+        <div className="ws-message-log" ref={messageLogRef}>
           {messages.length === 0 ? (
             <div className="ws-empty-state">
               <div className="ws-empty-icon">&#9889;</div>
@@ -416,7 +419,6 @@ export default function WebSocketConsolePage() {
               );
             })
           )}
-          <div ref={messagesEndRef} />
         </div>
       </div>
     </div>

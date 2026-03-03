@@ -1262,10 +1262,11 @@ body {
    ============================================================ */
 
 .ws-console-wrapper {
-  min-height: 100vh;
+  height: 100vh;
   background: var(--gray-50);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* Top Bar */
@@ -1499,7 +1500,8 @@ body {
 /* Main Two-Column Layout */
 .ws-main {
   display: grid;
-  grid-template-columns: 400px 1fr;
+  grid-template-columns: 400px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 24px;
   padding: 24px 32px 32px;
   flex: 1;
@@ -1547,11 +1549,10 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-height: calc(100vh - 240px);
+  display: block;
+  min-height: 0;
 }
 
 .ws-empty-state {
@@ -1585,8 +1586,17 @@ body {
 
 /* Individual Message */
 .ws-msg {
+  display: block;
+  width: 100%;
+  position: relative;
+  margin-bottom: 12px;
+  flex: none;
   border-radius: var(--radius);
   overflow: hidden;
+}
+
+.ws-msg:last-child {
+  margin-bottom: 0;
 }
 
 .ws-msg-status {
@@ -1667,6 +1677,7 @@ body {
 }
 
 .ws-msg-body {
+  display: block;
   margin: 8px 14px 12px;
   padding: 10px 14px;
   background: rgba(0, 0, 0, 0.03);
@@ -1677,6 +1688,7 @@ body {
   color: var(--gray-800);
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   overflow-x: auto;
 }
 

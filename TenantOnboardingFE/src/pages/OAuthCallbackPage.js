@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useTenant } from "../context/TenantContext";
 import { federatedVerify } from "../services/api";
 import LoadingSpinner from "../components/LoadingSpinner";
+import { saveTokensToSession } from "../utils/authSession";
 
 export default function OAuthCallbackPage() {
   const navigate = useNavigate();
@@ -47,6 +48,7 @@ export default function OAuthCallbackPage() {
       try {
         const result = await federatedVerify(code, tenantSlug, codeVerifier, redirectUri);
         sessionStorage.removeItem("pkce_verifier");
+        saveTokensToSession(result);
 
         navigate("/dashboard", {
           replace: true,
