@@ -57,6 +57,8 @@ const config = {
     process.env.REACT_APP_ONBOARDING_API_URL || 'http://localhost:3001',
   SIGNIN_API_URL:
     process.env.REACT_APP_SIGNIN_API_URL || 'http://localhost:3002',
+  SYNC_API_URL:
+    process.env.REACT_APP_SYNC_API_URL || 'http://localhost:3003',
   APP_DOMAIN,
   APP_NAME: process.env.REACT_APP_NAME || 'NextGenDevAcademy',
 

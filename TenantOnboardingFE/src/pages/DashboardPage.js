@@ -268,6 +268,41 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* API Key Management (admin only) */}
+        {isAdmin && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "16px 20px",
+              background: "white",
+              border: "1px solid var(--gray-200)",
+              borderRadius: "var(--radius-lg)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 22 }}>🔑</span>
+              <div>
+                <div style={{ fontWeight: 600, color: "var(--gray-800)" }}>
+                  API Key Management
+                </div>
+                <div style={{ fontSize: 13, color: "var(--gray-500)", marginTop: 2 }}>
+                  Create and manage scoped API keys for scripts, integrations, and automation
+                </div>
+              </div>
+            </div>
+            <button
+              className="btn btn-secondary"
+              onClick={() => navigate("/admin/api-keys")}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              Manage Keys →
+            </button>
+          </div>
+        )}
+
         {/* Footer note */}
         <div
           style={{

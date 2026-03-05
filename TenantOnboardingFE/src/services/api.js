@@ -138,3 +138,48 @@ export async function deleteIdpConfig(accessToken) {
   if (!res.ok) throw { status: res.status, ...data };
   return data;
 }
+
+// ─────────────────────────────────────────────
+// PAT MANAGEMENT APIs (user-sync-lambda, tenant_admin only)
+// ─────────────────────────────────────────────
+
+const SYNC_URL = config.SYNC_API_URL;
+
+export async function listTenantUsers(accessToken) {
+  const res = await fetch(`${SYNC_URL}/api-keys/users`, {
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+export async function createPat(data, accessToken) {
+  const res = await fetch(`${SYNC_URL}/api-keys`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+  if (!res.ok) throw { status: res.status, ...result };
+  return result;
+}
+
+export async function listPats(accessToken) {
+  const res = await fetch(`${SYNC_URL}/api-keys`, {
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+export async function revokePat(tokenPrefix, accessToken) {
+  const res = await fetch(`${SYNC_URL}/api-keys/${encodeURIComponent(tokenPrefix)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
