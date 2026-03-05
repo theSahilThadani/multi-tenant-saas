@@ -5,8 +5,14 @@ Used by: External systems (HRMS, directory services, internal backends)
 Purpose: Push users into an existing tenant workspace via API key auth
 
 Routes:
-  POST /sync/api-key/generate  → Generate or rotate API key (Cognito token auth)
+  POST /sync/api-key/generate  → Generate or rotate legacy API key (Cognito token auth)
   POST /users/create           → Create a single user in a tenant workspace (API key auth)
+
+PAT Management Routes (all require Bearer token + tenant_admin):
+  GET  /api-keys/users         → List tenant users for PAT assignment
+  POST /api-keys               → Create a new PAT for a selected user
+  GET  /api-keys               → List all PATs for the tenant
+  DELETE /api-keys/{prefix}    → Revoke a PAT
 """
 
 import os
@@ -29,7 +35,7 @@ def response(status_code, body):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type,Authorization,X-API-Key",
-            "Access-Control-Allow-Methods": "POST,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
         },
         "body": json.dumps(body, default=str),
     }
@@ -38,8 +44,86 @@ def response(status_code, body):
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 VALID_ROLES = {"user", "tenant_admin"}
 
+# Known PAT scopes — new scopes can be added here without schema changes
+KNOWN_SCOPES = {
+    "users:read",
+    "users:write",
+    "tenant:read",
+    "idp:manage",
+    "incidents:read",
+    "incidents:write",
+    "reports:read",
+}
+
 cognito = boto3.client("cognito-idp")
 ses = boto3.client("ses")
+
+
+# ─────────────────────────────────────────────────────
+# AUTH HELPERS
+# ─────────────────────────────────────────────────────
+
+def _require_tenant_admin(event):
+    """
+    Verify Bearer token, require custom:role = tenant_admin.
+    Returns (tenant_slug, tenant_dict, caller_email, None) on success.
+    Returns (None, None, None, error_response) on failure.
+    """
+    headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+
+    if not auth_header.lower().startswith("bearer "):
+        return None, None, None, response(401, {
+            "error": "MISSING_TOKEN",
+            "message": "Authorization: Bearer <token> header is required",
+        })
+
+    access_token = auth_header.split(" ", 1)[1].strip()
+
+    try:
+        user_info = cognito.get_user(AccessToken=access_token)
+    except cognito.exceptions.NotAuthorizedException:
+        return None, None, None, response(401, {
+            "error": "INVALID_TOKEN",
+            "message": "Token is invalid or expired",
+        })
+    except Exception as e:
+        return None, None, None, response(401, {
+            "error": "INVALID_TOKEN",
+            "message": str(e),
+        })
+
+    tenant_slug = ""
+    caller_role = ""
+    caller_email = ""
+    for attr in user_info.get("UserAttributes", []):
+        if attr["Name"] == "custom:tenant_id":
+            tenant_slug = attr["Value"]
+        if attr["Name"] == "custom:role":
+            caller_role = attr["Value"]
+        if attr["Name"] == "email":
+            caller_email = attr["Value"]
+
+    if caller_role != "tenant_admin":
+        return None, None, None, response(403, {
+            "error": "FORBIDDEN",
+            "message": "Only tenant admins can manage API keys",
+        })
+
+    if not tenant_slug:
+        return None, None, None, response(403, {
+            "error": "NO_TENANT",
+            "message": "Your account is not associated with any tenant",
+        })
+
+    tenant = db.get_tenant_by_slug(tenant_slug)
+    if not tenant:
+        return None, None, None, response(404, {
+            "error": "TENANT_NOT_FOUND",
+            "message": f"Tenant '{tenant_slug}' not found or inactive",
+        })
+
+    return tenant_slug, tenant, caller_email, None
 
 
 # ═════════════════════════════════════════════════════
@@ -159,8 +243,33 @@ def handle_create_user(event):
         })
 
     # ── STEP 2: Resolve tenant from API key ──
+    # Try new PAT system first (saas_pat_xxx → SHA-256 → pat_tokens table)
+    # Fall back to legacy tenants.api_key column for backward compatibility
     print(f"[CREATE-USER] Resolving tenant from API key")
-    tenant = db.get_tenant_by_api_key(api_key)
+    tenant = None
+    pat_record = None
+
+    if api_key.startswith("saas_pat_"):
+        token_hash = db.hash_token(api_key)
+        pat_record = db.get_pat_by_hash(token_hash)
+        if pat_record:
+            # Check scopes — require users:write for user creation
+            pat_scopes = pat_record.get("scopes") or []
+            if "users:write" not in pat_scopes:
+                return response(403, {
+                    "error": "INSUFFICIENT_SCOPE",
+                    "message": "This API key does not have 'users:write' scope",
+                    "requiredScope": "users:write",
+                    "tokenScopes": pat_scopes,
+                })
+            tenant = db.get_tenant_by_id(str(pat_record["tenant_id"]))
+            db.update_pat_last_used(token_hash)
+            print(f"[CREATE-USER] Authenticated via PAT (user: {pat_record['user_email']})")
+
+    if not tenant:
+        # Legacy fallback: check tenants.api_key column
+        tenant = db.get_tenant_by_api_key(api_key)
+
     if not tenant:
         return response(401, {
             "error": "INVALID_API_KEY",
@@ -308,6 +417,259 @@ def handle_create_user(event):
 
 
 # ═════════════════════════════════════════════════════
+# ROUTE 3: LIST TENANT USERS (for PAT assignment)
+# ═════════════════════════════════════════════════════
+
+def handle_list_tenant_users(event):
+    """
+    GET /api-keys/users
+    Header: Authorization: Bearer <tenant_admin_access_token>
+
+    Returns list of users in the tenant for the PAT user-selection dropdown.
+    """
+    tenant_slug, tenant, caller_email, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    tenant_id = str(tenant["id"])
+    users = db.list_tenant_users(tenant_id)
+
+    print(f"[PAT] Listed {len(users)} users for {tenant_slug}")
+
+    return response(200, {
+        "users": [
+            {
+                "userId": u["cognito_sub"],
+                "email": u["email"],
+                "role": u["role"],
+            }
+            for u in users
+        ],
+        "total": len(users),
+    })
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 4: CREATE PAT
+# ═════════════════════════════════════════════════════
+
+def handle_create_pat(event):
+    """
+    POST /api-keys
+    Header: Authorization: Bearer <tenant_admin_access_token>
+    Body:   { "name": "HRMS Integration", "userId": "<cognito_sub>",
+              "scopes": ["users:write", "incidents:read"], "expiresInDays": 365 }
+
+    Creates a PAT for the specified user. Returns the raw token ONCE.
+    """
+    tenant_slug, tenant, caller_email, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    tenant_id = str(tenant["id"])
+
+    # ── Parse body ──
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except json.JSONDecodeError:
+        return response(400, {
+            "error": "INVALID_BODY",
+            "message": "Request body must be valid JSON",
+        })
+
+    # ── Validate name ──
+    name = body.get("name", "").strip()
+    if not name or len(name) < 2 or len(name) > 100:
+        return response(400, {
+            "error": "INVALID_NAME",
+            "message": "name is required (2-100 characters)",
+        })
+
+    # ── Validate userId ──
+    user_id = body.get("userId", "").strip()
+    if not user_id:
+        return response(400, {
+            "error": "MISSING_USER_ID",
+            "message": "userId (cognito_sub) is required",
+        })
+
+    # Verify user belongs to this tenant
+    users = db.list_tenant_users(tenant_id)
+    target_user = None
+    for u in users:
+        if u["cognito_sub"] == user_id:
+            target_user = u
+            break
+
+    if not target_user:
+        return response(404, {
+            "error": "USER_NOT_FOUND",
+            "message": "User not found in this tenant",
+        })
+
+    # ── Validate scopes ──
+    scopes = body.get("scopes", [])
+    if not isinstance(scopes, list) or not scopes:
+        return response(400, {
+            "error": "INVALID_SCOPES",
+            "message": "scopes must be a non-empty array of strings",
+        })
+    invalid_scopes = [s for s in scopes if s not in KNOWN_SCOPES]
+    if invalid_scopes:
+        return response(400, {
+            "error": "UNKNOWN_SCOPES",
+            "message": f"Unknown scopes: {', '.join(invalid_scopes)}",
+            "knownScopes": sorted(KNOWN_SCOPES),
+        })
+
+    # ── Validate expiry ──
+    expires_in_days = body.get("expiresInDays")
+    expires_at = None
+    if expires_in_days is not None:
+        try:
+            days = int(expires_in_days)
+            if days < 1 or days > 365:
+                return response(400, {
+                    "error": "INVALID_EXPIRY",
+                    "message": "expiresInDays must be between 1 and 365",
+                })
+            from datetime import datetime, timedelta, timezone
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+        except (ValueError, TypeError):
+            return response(400, {
+                "error": "INVALID_EXPIRY",
+                "message": "expiresInDays must be an integer",
+            })
+
+    # ── Generate token ──
+    raw_token = "saas_pat_" + uuid.uuid4().hex
+    token_hash = db.hash_token(raw_token)
+    token_prefix = raw_token[:20]  # "saas_pat_" (9 chars) + first 11 hex chars
+
+    try:
+        row = db.create_pat(
+            token_hash=token_hash,
+            token_prefix=token_prefix,
+            name=name,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            user_email=target_user["email"],
+            user_role=target_user["role"],
+            scopes=scopes,
+            created_by=caller_email,
+            expires_at=expires_at,
+        )
+    except Exception as e:
+        if "idx_pat_name_tenant" in str(e) or "duplicate key" in str(e).lower():
+            return response(409, {
+                "error": "DUPLICATE_NAME",
+                "message": f"An active key named '{name}' already exists",
+            })
+        print(f"[PAT] Create error: {e}")
+        return response(500, {
+            "error": "INTERNAL_ERROR",
+            "message": f"Failed to create PAT: {str(e)}",
+        })
+
+    print(f"[PAT] Created '{name}' for {target_user['email']} in {tenant_slug} by {caller_email}")
+
+    return response(201, {
+        "apiKey": raw_token,  # Shown ONCE — never stored or returned again
+        "name": name,
+        "tokenPrefix": token_prefix,
+        "userId": user_id,
+        "userEmail": target_user["email"],
+        "userRole": target_user["role"],
+        "scopes": scopes,
+        "expiresAt": str(row["expires_at"]) if row["expires_at"] else None,
+        "createdAt": str(row["created_at"]),
+        "createdBy": caller_email,
+        "message": "Copy this API key now — it will not be shown again.",
+    })
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 5: LIST PATs
+# ═════════════════════════════════════════════════════
+
+def handle_list_pats(event):
+    """
+    GET /api-keys
+    Header: Authorization: Bearer <tenant_admin_access_token>
+
+    Returns all PATs for the caller's tenant. Never returns hash or raw token.
+    """
+    tenant_slug, tenant, caller_email, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    keys = db.list_pats(str(tenant["id"]))
+
+    print(f"[PAT] Listed {len(keys)} keys for {tenant_slug}")
+
+    return response(200, {
+        "keys": [
+            {
+                "tokenPrefix": k["token_prefix"],
+                "name": k["name"],
+                "userId": k["user_id"],
+                "userEmail": k["user_email"],
+                "userRole": k["user_role"],
+                "scopes": k["scopes"],
+                "status": k["status"],
+                "createdBy": k["created_by"],
+                "lastUsedAt": str(k["last_used_at"]) if k["last_used_at"] else None,
+                "expiresAt": str(k["expires_at"]) if k["expires_at"] else None,
+                "createdAt": str(k["created_at"]),
+            }
+            for k in keys
+        ],
+        "total": len(keys),
+    })
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 6: REVOKE PAT
+# ═════════════════════════════════════════════════════
+
+def handle_revoke_pat(event):
+    """
+    DELETE /api-keys/{prefix}
+    Header: Authorization: Bearer <tenant_admin_access_token>
+
+    Revokes a PAT by its token prefix. The key immediately stops working.
+    """
+    tenant_slug, tenant, caller_email, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    # Extract prefix from path: /api-keys/{prefix}
+    path = event.get("path", "")
+    parts = path.strip("/").split("/")
+    if len(parts) < 2:
+        return response(400, {
+            "error": "MISSING_PREFIX",
+            "message": "Token prefix is required in the URL path",
+        })
+    token_prefix = parts[-1]
+
+    revoked = db.revoke_pat(token_prefix, str(tenant["id"]))
+    if not revoked:
+        return response(404, {
+            "error": "KEY_NOT_FOUND",
+            "message": "API key not found or already revoked",
+        })
+
+    print(f"[PAT] Revoked {token_prefix} for {tenant_slug} by {caller_email}")
+
+    return response(200, {
+        "tokenPrefix": token_prefix,
+        "status": "revoked",
+        "message": "API key has been revoked and can no longer be used.",
+    })
+
+
+# ═════════════════════════════════════════════════════
 # INVITE EMAIL
 # ═════════════════════════════════════════════════════
 
@@ -438,10 +800,24 @@ def lambda_handler(event, context):
     if method == "OPTIONS":
         return response(200, {})
 
+    # ── Legacy routes ──
     if method == "POST" and path == "/sync/api-key/generate":
         return handle_generate_api_key(event)
 
     if method == "POST" and path == "/users/create":
         return handle_create_user(event)
+
+    # ── PAT management routes (Bearer token + tenant_admin) ──
+    if method == "GET" and path == "/api-keys/users":
+        return handle_list_tenant_users(event)
+
+    if method == "POST" and path == "/api-keys":
+        return handle_create_pat(event)
+
+    if method == "GET" and path == "/api-keys":
+        return handle_list_pats(event)
+
+    if method == "DELETE" and path.startswith("/api-keys/"):
+        return handle_revoke_pat(event)
 
     return response(404, {"error": "NOT_FOUND", "message": f"Route {method} {path} not found"})
