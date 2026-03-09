@@ -7,6 +7,7 @@ Handles: Scenarios 1, 2, 3, 4
 Routes:
   POST /auth/send-otp         → Send OTP + check if user has tenant
   POST /auth/verify-otp       → Verify OTP + return tenant info
+  POST /auth/google-verify    → Google OAuth code → Cognito tokens
   GET  /onboarding/check-slug → Check slug availability
   POST /onboarding/tenant     → Create workspace + welcome email
 """
@@ -15,6 +16,10 @@ import os
 import json
 import re
 import uuid
+import base64
+import secrets
+import urllib.request
+import urllib.parse
 import boto3
 
 import db
@@ -249,7 +254,210 @@ def handle_verify_otp(event):
 
 
 # ═════════════════════════════════════════════════════
-# ROUTE 3: CHECK SLUG
+# ROUTE 3: GOOGLE VERIFY (Direct OAuth — no Cognito federation)
+# ═════════════════════════════════════════════════════
+
+def handle_google_verify(event):
+    """
+    POST /auth/google-verify
+    Body: { code, redirectUri }
+
+    Frontend redirects user to Google consent screen (accounts.google.com).
+    Google redirects back with an auth code. Frontend sends that code here.
+
+    Backend:
+      1. Exchanges code for Google tokens (googleapis.com/token)
+      2. Verifies Google ID token (iss, aud, email_verified)
+      3. Creates user in Cognito with email as username (if not exists)
+      4. Issues Cognito tokens via admin_initiate_auth
+      5. Checks if user already has a workspace (custom:tenant_id)
+
+    Returns same shape as handle_verify_otp so frontend routing is identical.
+    """
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    code = body.get("code", "").strip()
+    redirect_uri = body.get("redirectUri", "").strip()
+
+    if not code or not redirect_uri:
+        return response(400, {
+            "error": "MISSING_FIELDS",
+            "message": "code and redirectUri are required",
+        })
+
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+    signup_client_id = os.environ["SIGNUP_CLIENT_ID"]
+    app_domain = os.environ.get("APP_DOMAIN", "example.com")
+
+    if not google_client_id or not google_client_secret:
+        return response(500, {"error": "CONFIG_ERROR", "message": "Google OAuth not configured"})
+
+    # ── Step 1: Exchange Google auth code for tokens ──
+    token_data = urllib.parse.urlencode({
+        "code": code,
+        "client_id": google_client_id,
+        "client_secret": google_client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=token_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            google_tokens = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"[GOOGLE-VERIFY] Code exchange failed: {str(e)}")
+        return response(400, {"error": "CODE_EXCHANGE_FAILED", "message": str(e)})
+
+    google_id_token = google_tokens.get("id_token")
+    if not google_id_token:
+        return response(400, {"error": "NO_ID_TOKEN", "message": "Google did not return an id_token"})
+
+    # ── Step 2: Decode and verify Google ID token ──
+    try:
+        parts = google_id_token.split(".")
+        padding = "=" * (4 - len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + padding).decode())
+    except Exception as e:
+        return response(400, {"error": "TOKEN_DECODE_FAILED", "message": str(e)})
+
+    # Verify token claims
+    if payload.get("iss") not in ("https://accounts.google.com", "accounts.google.com"):
+        return response(400, {"error": "INVALID_ISSUER", "message": "Token not issued by Google"})
+    if payload.get("aud") != google_client_id:
+        return response(400, {"error": "INVALID_AUDIENCE", "message": "Token audience mismatch"})
+    if not payload.get("email_verified"):
+        return response(400, {"error": "EMAIL_NOT_VERIFIED", "message": "Google email is not verified"})
+
+    email = payload.get("email", "").strip().lower()
+    if not email:
+        return response(400, {"error": "EMAIL_MISSING", "message": "Google did not return an email"})
+
+    print(f"[GOOGLE-VERIFY] Verified Google email: {email}")
+
+    # ── Step 3: Create user in Cognito if not exists (email as username) ──
+    user_exists = False
+    has_tenant = False
+    tenant_slug = ""
+
+    try:
+        existing_user = cognito.admin_get_user(
+            UserPoolId=user_pool_id, Username=email)
+        user_exists = True
+
+        for attr in existing_user.get("UserAttributes", []):
+            if attr["Name"] == "custom:tenant_id" and attr["Value"]:
+                has_tenant = True
+                tenant_slug = attr["Value"]
+
+        print(f"[GOOGLE-VERIFY] User exists: {user_exists}, hasTenant: {has_tenant}")
+
+    except cognito.exceptions.UserNotFoundException:
+        user_exists = False
+        print(f"[GOOGLE-VERIFY] New user, creating in Cognito")
+
+    if not user_exists:
+        cognito.admin_create_user(
+            UserPoolId=user_pool_id,
+            Username=email,
+            UserAttributes=[
+                {"Name": "email", "Value": email},
+                {"Name": "email_verified", "Value": "true"},
+            ],
+            MessageAction="SUPPRESS",
+        )
+        print(f"[GOOGLE-VERIFY] Created Cognito user: {email}")
+
+    # ── Step 4: Issue Cognito tokens via admin auth ──
+    temp_password = secrets.token_urlsafe(32) + "!Aa1"
+    try:
+        cognito.admin_set_user_password(
+            UserPoolId=user_pool_id,
+            Username=email,
+            Password=temp_password,
+            Permanent=True,
+        )
+
+        auth_result = cognito.admin_initiate_auth(
+            UserPoolId=user_pool_id,
+            ClientId=signup_client_id,
+            AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+            AuthParameters={
+                "USERNAME": email,
+                "PASSWORD": temp_password,
+            },
+        )
+
+        tokens = auth_result.get("AuthenticationResult", {})
+        access_token = tokens.get("AccessToken")
+        id_token_cognito = tokens.get("IdToken", "")
+        refresh_token = tokens.get("RefreshToken", "")
+
+        if not access_token:
+            return response(500, {"error": "AUTH_FAILED", "message": "Could not issue Cognito tokens"})
+
+    except Exception as e:
+        print(f"[GOOGLE-VERIFY] Cognito auth failed: {str(e)}")
+        return response(500, {"error": "AUTH_FAILED", "message": str(e)})
+
+    # ── Step 5: Check tenant details (same as handle_verify_otp) ──
+    tenant_name = ""
+    tenant_plan = ""
+    tenant_role = ""
+    login_url = ""
+
+    if has_tenant and tenant_slug:
+        try:
+            tenant = db.get_tenant_by_slug(tenant_slug)
+            if tenant:
+                tenant_name = tenant.get("name", "")
+                tenant_plan = tenant.get("plan", "")
+                login_url = f"https://{tenant_slug}.{app_domain}"
+            else:
+                print(f"[GOOGLE-VERIFY] WARNING: Tenant {tenant_slug} not in DB")
+                has_tenant = False
+                tenant_slug = ""
+        except Exception as e:
+            print(f"[GOOGLE-VERIFY] Tenant lookup warning: {str(e)}")
+
+    try:
+        user_info = cognito.admin_get_user(
+            UserPoolId=user_pool_id, Username=email)
+        for attr in user_info.get("UserAttributes", []):
+            if attr["Name"] == "custom:role" and attr["Value"]:
+                tenant_role = attr["Value"]
+    except Exception:
+        pass
+
+    print(f"[GOOGLE-VERIFY] Done: {email} | hasTenant={has_tenant} | slug={tenant_slug}")
+
+    return response(200, {
+        "verified": True,
+        "email": email,
+        "accessToken": access_token,
+        "idToken": id_token_cognito,
+        "refreshToken": refresh_token,
+        "hasTenant": has_tenant,
+        "tenantSlug": tenant_slug,
+        "tenantName": tenant_name,
+        "tenantPlan": tenant_plan,
+        "tenantRole": tenant_role,
+        "loginUrl": login_url,
+    })
+
+
+# ═════════════════════════════════════════════════════
+# ROUTE 4: CHECK SLUG
 # ═════════════════════════════════════════════════════
 
 def handle_check_slug(event):
@@ -1005,6 +1213,8 @@ def lambda_handler(event, context):
         return handle_send_otp(event)
     if method == "POST" and path == "/auth/verify-otp":
         return handle_verify_otp(event)
+    if method == "POST" and path == "/auth/google-verify":
+        return handle_google_verify(event)
     if method == "GET" and path == "/onboarding/check-slug":
         return handle_check_slug(event)
     if method == "POST" and path == "/onboarding/tenant":

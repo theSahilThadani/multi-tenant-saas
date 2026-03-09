@@ -62,6 +62,9 @@ const config = {
   APP_DOMAIN,
   APP_NAME: process.env.REACT_APP_NAME || 'NextGenDevAcademy',
 
+  // Google OAuth (main domain signup)
+  GOOGLE_CLIENT_ID: process.env.REACT_APP_GOOGLE_CLIENT_ID || '',
+
   // Resolved at runtime from hostname + cookie
   tenantSlug,
   isTenantMode,

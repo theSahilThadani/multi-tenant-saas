@@ -35,6 +35,17 @@ export async function checkSlug(slug) {
   return res.json();
 }
 
+export async function googleVerify(code, redirectUri) {
+  const res = await fetch(`${ONBOARDING_URL}/auth/google-verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, redirectUri }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
 export async function createTenant(data) {
   const res = await fetch(`${ONBOARDING_URL}/onboarding/tenant`, {
     method: "POST",

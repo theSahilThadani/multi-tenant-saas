@@ -8,6 +8,7 @@ import WelcomeBackPage from './pages/WelcomeBackPage';
 import OnboardingComplete from './pages/OnboardingComplete';
 import DashboardPage from './pages/DashboardPage';
 import OAuthCallbackPage from './pages/OAuthCallbackPage';
+import GoogleCallbackPage from './pages/GoogleCallbackPage';
 import AdminSettingsPage from './pages/AdminSettingsPage';
 import ApiKeysPage from './pages/ApiKeysPage';
 import AccessDeniedPage from './pages/AccessDeniedPage';
@@ -56,6 +57,7 @@ function AppRoutes() {
       <Route path="/onboarding/complete" element={<OnboardingComplete />} />
       <Route path="/dashboard" element={<DashboardPage />} />
       <Route path="/auth/callback" element={<OAuthCallbackPage />} />
+      <Route path="/auth/google/callback" element={<GoogleCallbackPage />} />
       <Route path="/admin/settings" element={<AdminSettingsPage />} />
       <Route path="/admin/api-keys" element={<ApiKeysPage />} />
       <Route path="/access-denied" element={<AccessDeniedPage />} />
