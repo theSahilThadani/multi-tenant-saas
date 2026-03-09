@@ -223,3 +223,95 @@ def update_idp_login_modes(tenant_id, cognito_login_enabled, sso_login_enabled):
                WHERE tenant_id = %s AND enabled = TRUE""",
             (cognito_login_enabled, sso_login_enabled, tenant_id),
         )
+
+
+# ─────────────────────────────────────────────
+# MAGIC LINK TOKEN OPERATIONS
+# ─────────────────────────────────────────────
+
+def create_magic_link_token(token_hash, email, tenant_id, purpose, context, ttl_minutes):
+    """Insert a new magic link token."""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO magic_link_tokens (token_hash, email, tenant_id, purpose, context, expires_at)
+               VALUES (%s, %s, %s, %s, %s::jsonb, NOW() + INTERVAL '%s minutes')""",
+            (token_hash, email, tenant_id, purpose,
+             __import__('json').dumps(context), ttl_minutes),
+        )
+
+
+def get_magic_link_token(token_hash):
+    """Look up a magic link token by its SHA-256 hash. Returns dict or None."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """SELECT id, token_hash, email, tenant_id, purpose, context,
+                      expires_at, used_at, created_at
+               FROM magic_link_tokens
+               WHERE token_hash = %s""",
+            (token_hash,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_tenant_by_slug_or_id(slug_or_id):
+    """Get tenant by slug or UUID id. Returns dict or None."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """SELECT id, name, slug, subdomain, cognito_client_id,
+                      plan, status, created_at, updated_at
+               FROM tenants WHERE slug = %s OR id::text = %s""",
+            (slug_or_id, str(slug_or_id)),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+# ─────────────────────────────────────────────
+# DEMO APPROVAL OPERATIONS
+# ─────────────────────────────────────────────
+
+def create_demo_approval(tenant_id, title, description, requested_by, approver_email):
+    """Create a demo approval request."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """INSERT INTO demo_approvals (tenant_id, title, description, requested_by, approver_email)
+               VALUES (%s, %s, %s, %s, %s)
+               RETURNING id, tenant_id, title, description, requested_by,
+                         approver_email, status, created_at""",
+            (tenant_id, title, description, requested_by, approver_email),
+        )
+        return dict(cur.fetchone())
+
+
+def get_demo_approval(approval_id):
+    """Get a demo approval by ID. Returns dict or None."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """SELECT id, tenant_id, title, description, requested_by,
+                      approver_email, status, decided_at, decision_comment, created_at
+               FROM demo_approvals WHERE id = %s""",
+            (approval_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def decide_demo_approval(approval_id, status, comment):
+    """Approve or reject a demo approval."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """UPDATE demo_approvals
+               SET status = %s, decision_comment = %s, decided_at = NOW()
+               WHERE id = %s AND status = 'pending'
+               RETURNING id, status, decided_at""",
+            (status, comment, approval_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None

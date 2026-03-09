@@ -194,3 +194,74 @@ export async function revokePat(tokenPrefix, accessToken) {
   if (!res.ok) throw { status: res.status, ...data };
   return data;
 }
+
+// ─────────────────────────────────────────────
+// MAGIC LINK APIs
+// ─────────────────────────────────────────────
+
+export async function verifyMagicLink(token) {
+  const res = await fetch(`${ONBOARDING_URL}/magic-link/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+export async function generateMagicLink(payload, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/magic-link/generate`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+// ─────────────────────────────────────────────
+// DEMO APPROVAL APIs (Pattern A)
+// ─────────────────────────────────────────────
+
+export async function createApproval(data, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/demo/approvals`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+  if (!res.ok) throw { status: res.status, ...result };
+  return result;
+}
+
+export async function getApproval(approvalId, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/demo/approvals/${approvalId}`, {
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+export async function decideApproval(approvalId, decision, comment, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/demo/approvals/${approvalId}/decide`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ decision, comment }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+export async function notifyApproval(approvalId, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/demo/approvals/${approvalId}/notify`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}

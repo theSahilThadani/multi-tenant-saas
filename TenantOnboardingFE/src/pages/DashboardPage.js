@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTenant } from "../context/TenantContext";
+import { createApproval, notifyApproval } from "../services/api";
 import config from "../config";
 
 export default function DashboardPage() {
@@ -303,6 +304,35 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Magic Link Demo — Approval Request */}
+        <div
+          style={{
+            marginTop: 24,
+            padding: "20px",
+            background: "white",
+            border: "1px solid var(--gray-200)",
+            borderRadius: "var(--radius-lg)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <span style={{ fontSize: 22 }}>✉️</span>
+            <div>
+              <div style={{ fontWeight: 600, color: "var(--gray-800)" }}>
+                Magic Link Demo — Approval Request
+              </div>
+              <div style={{ fontSize: 13, color: "var(--gray-500)", marginTop: 2 }}>
+                Create a demo approval and receive a magic link email. Click the link to land directly on the approval page — no login required.
+              </div>
+            </div>
+          </div>
+
+          <DemoApprovalForm
+            accessToken={userData.accessToken}
+            userEmail={userData.email}
+            tenantSlug={userData.tenantSlug}
+          />
+        </div>
+
         {/* Footer note */}
         <div
           style={{
@@ -326,6 +356,115 @@ export default function DashboardPage() {
           </span>
         </div>
       </main>
+    </div>
+  );
+}
+
+
+function DemoApprovalForm({ accessToken, userEmail, tenantSlug }) {
+  const [title, setTitle] = useState("Deploy v2.4.1 to Production");
+  const [description, setDescription] = useState("Requesting approval to deploy the latest release to the production cluster.");
+  const [approverEmail, setApproverEmail] = useState(userEmail || "");
+  const [status, setStatus] = useState("idle"); // idle, creating, sending, done, error
+  const [error, setError] = useState("");
+
+  async function handleSend() {
+    setStatus("creating");
+    setError("");
+    try {
+      const approval = await createApproval(
+        { title, description, approver_email: approverEmail },
+        accessToken
+      );
+
+      setStatus("sending");
+      await notifyApproval(approval.id, accessToken);
+
+      setStatus("done");
+    } catch (err) {
+      setError(err.message || "Something went wrong");
+      setStatus("error");
+    }
+  }
+
+  if (status === "done") {
+    return (
+      <div style={{ padding: 16, background: "#D1FAE5", borderRadius: 8, textAlign: "center" }}>
+        <p style={{ margin: 0, fontWeight: 600, color: "#065F46" }}>
+          ✓ Magic link sent to {approverEmail}
+        </p>
+        <p style={{ margin: "8px 0 0", fontSize: 13, color: "#065F46" }}>
+          Check your email and click the link to land directly on the approval page.
+        </p>
+        <button
+          onClick={() => setStatus("idle")}
+          style={{
+            marginTop: 12, padding: "6px 16px", background: "transparent",
+            border: "1px solid #065F46", borderRadius: 6, color: "#065F46",
+            cursor: "pointer", fontSize: 13,
+          }}
+        >
+          Send Another
+        </button>
+      </div>
+    );
+  }
+
+  const isLoading = status === "creating" || status === "sending";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Title</label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          style={{
+            width: "100%", padding: 8, borderRadius: 6, border: "1px solid var(--gray-300)",
+            fontSize: 14, boxSizing: "border-box",
+          }}
+        />
+      </div>
+      <div>
+        <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Description</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={2}
+          style={{
+            width: "100%", padding: 8, borderRadius: 6, border: "1px solid var(--gray-300)",
+            fontSize: 14, resize: "vertical", boxSizing: "border-box",
+          }}
+        />
+      </div>
+      <div>
+        <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+          Send magic link to (email)
+        </label>
+        <input
+          type="email"
+          value={approverEmail}
+          onChange={(e) => setApproverEmail(e.target.value)}
+          style={{
+            width: "100%", padding: 8, borderRadius: 6, border: "1px solid var(--gray-300)",
+            fontSize: 14, boxSizing: "border-box",
+          }}
+        />
+      </div>
+      {error && <p style={{ color: "#DC2626", fontSize: 13, margin: 0 }}>{error}</p>}
+      <button
+        onClick={handleSend}
+        disabled={isLoading || !title || !approverEmail}
+        style={{
+          padding: "10px 20px", backgroundColor: "#4F46E5", color: "white",
+          border: "none", borderRadius: 6, cursor: isLoading ? "not-allowed" : "pointer",
+          fontSize: 14, fontWeight: 600, opacity: isLoading ? 0.7 : 1,
+          alignSelf: "flex-start",
+        }}
+      >
+        {isLoading ? (status === "creating" ? "Creating approval..." : "Sending email...") : "Create & Send Magic Link"}
+      </button>
     </div>
   );
 }

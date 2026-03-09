@@ -10,6 +10,12 @@ Routes:
   POST /auth/google-verify    → Google OAuth code → Cognito tokens
   GET  /onboarding/check-slug → Check slug availability
   POST /onboarding/tenant     → Create workspace + welcome email
+  POST /magic-link/generate   → Generate & send magic link email
+  POST /magic-link/verify     → Verify magic link → Cognito tokens
+  POST /demo/approvals        → Create demo approval request
+  GET  /demo/approvals/{id}   → Get approval details
+  POST /demo/approvals/{id}/decide → Approve or reject
+  POST /demo/approvals/{id}/notify → Send magic link to approver
 """
 
 import os
@@ -23,6 +29,8 @@ import urllib.parse
 import boto3
 
 import db
+
+import magic_link
 
 
 # ─────────────────────────────────────────────────────
@@ -597,7 +605,7 @@ def handle_create_tenant(event):
             UserPoolId=user_pool_id,
             ClientName=f"{slug}-client",
             GenerateSecret=False,
-            ExplicitAuthFlows=["ALLOW_USER_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+            ExplicitAuthFlows=["ALLOW_USER_AUTH", "ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_CUSTOM_AUTH"],
             AccessTokenValidity=1,
             IdTokenValidity=1,
             RefreshTokenValidity=30,
@@ -1077,6 +1085,384 @@ def handle_delete_idp_config(event):
 
 
 # ═════════════════════════════════════════════════════
+# MAGIC LINK — GENERATE & VERIFY
+# ═════════════════════════════════════════════════════
+
+def handle_magic_link_generate(event):
+    """
+    POST /magic-link/generate
+    Body: { "email", "tenant_slug", "purpose", "context", "ttl_minutes" }
+    Generates a magic link and sends it via email.
+    """
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    email = (body.get("email") or "").strip().lower()
+    tenant_slug = (body.get("tenant_slug") or "").strip()
+    purpose = body.get("purpose", "auth")
+    ctx = body.get("context", {})
+    ttl_minutes = body.get("ttl_minutes", 15)
+
+    if not email or not EMAIL_REGEX.match(email):
+        return response(400, {"error": "INVALID_EMAIL"})
+    if purpose not in ("auth", "invitation", "guest"):
+        return response(400, {"error": "INVALID_PURPOSE"})
+
+    # Resolve tenant
+    tenant_id = None
+    if tenant_slug:
+        tenant = db.get_tenant_by_slug(tenant_slug)
+        if not tenant:
+            return response(404, {"error": "TENANT_NOT_FOUND"})
+        tenant_id = str(tenant["id"])
+
+        # For auth purpose, verify user belongs to tenant
+        if purpose == "auth":
+            tenant_user = db.get_tenant_user(tenant_id, email)
+            if not tenant_user:
+                return response(403, {"error": "USER_NOT_IN_TENANT"})
+
+    # Generate the magic link
+    url = magic_link.generate_magic_link(
+        email=email,
+        tenant_id=tenant_id,
+        purpose=purpose,
+        context=ctx,
+        ttl_minutes=ttl_minutes,
+    )
+
+    # Send email
+    subject = ctx.get("email_subject", "Your login link")
+    heading = ctx.get("email_heading", "Click to sign in")
+    body_text = ctx.get("email_body", "Click the button below to sign in. This link will expire shortly.")
+    button_text = ctx.get("email_button", "Sign In")
+
+    magic_link.send_magic_link_email(
+        to_email=email,
+        magic_link_url=url,
+        subject=subject,
+        heading=heading,
+        body_text=body_text,
+        button_text=button_text,
+    )
+
+    return response(200, {"sent": True, "email": email})
+
+
+def handle_magic_link_verify(event):
+    """
+    POST /magic-link/verify
+    Body: { "token": "<raw_token_from_url>" }
+    Validates the magic link via Cognito Custom Auth challenge.
+    Returns real Cognito tokens.
+    """
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    raw_token = (body.get("token") or "").strip()
+    if not raw_token:
+        return response(400, {"error": "MISSING_TOKEN"})
+
+    # Pre-check: look up token to get email + tenant before hitting Cognito
+    import hashlib
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    token_record = db.get_magic_link_token(token_hash)
+
+    if not token_record:
+        return response(400, {"error": "INVALID_LINK", "message": "This link is invalid."})
+    if token_record["used_at"] is not None:
+        return response(400, {"error": "LINK_ALREADY_USED", "message": "This link has already been used."})
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    expires_at = token_record["expires_at"]
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if now > expires_at:
+        return response(400, {"error": "LINK_EXPIRED", "message": "This link has expired."})
+
+    email = token_record["email"]
+    tenant_id = token_record["tenant_id"]
+    purpose = token_record["purpose"]
+    ctx = token_record.get("context") or {}
+
+    # Determine which Cognito client to use
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+    if tenant_id:
+        tenant = db.get_tenant_by_slug_or_id(str(tenant_id))
+        if not tenant or not tenant.get("cognito_client_id"):
+            return response(400, {"error": "TENANT_NOT_FOUND"})
+        client_id = tenant["cognito_client_id"]
+        tenant_slug = tenant["slug"]
+        tenant_name = tenant.get("name", "")
+    else:
+        client_id = os.environ["SIGNUP_CLIENT_ID"]
+        tenant_slug = ""
+        tenant_name = ""
+
+    try:
+        # Step 1: Initiate custom auth
+        print(f"[MAGIC-LINK-VERIFY] Initiating CUSTOM_AUTH for {email}")
+        auth_resp = cognito.admin_initiate_auth(
+            UserPoolId=user_pool_id,
+            ClientId=client_id,
+            AuthFlow="CUSTOM_AUTH",
+            AuthParameters={"USERNAME": email},
+        )
+
+        # Step 2: Respond with the raw token as challenge answer
+        challenge_name = auth_resp.get("ChallengeName")
+        session = auth_resp.get("Session")
+
+        if challenge_name != "CUSTOM_CHALLENGE":
+            print(f"[MAGIC-LINK-VERIFY] Unexpected challenge: {challenge_name}")
+            return response(500, {"error": "AUTH_FAILED", "message": "Unexpected auth challenge"})
+
+        result = cognito.admin_respond_to_auth_challenge(
+            UserPoolId=user_pool_id,
+            ClientId=client_id,
+            ChallengeName="CUSTOM_CHALLENGE",
+            ChallengeResponses={
+                "USERNAME": email,
+                "ANSWER": raw_token,
+            },
+            Session=session,
+        )
+
+        tokens = result.get("AuthenticationResult", {})
+        access_token = tokens.get("AccessToken")
+        id_token = tokens.get("IdToken", "")
+        refresh_token = tokens.get("RefreshToken", "")
+
+        if not access_token:
+            return response(500, {"error": "AUTH_FAILED", "message": "No tokens returned"})
+
+        # Get user role from Cognito attributes
+        user_info = cognito.get_user(AccessToken=access_token)
+        user_role = ""
+        for attr in user_info.get("UserAttributes", []):
+            if attr["Name"] == "custom:role":
+                user_role = attr["Value"]
+
+        print(f"[MAGIC-LINK-VERIFY] ✅ Authenticated {email} via magic link")
+
+        return response(200, {
+            "accessToken": access_token,
+            "idToken": id_token,
+            "refreshToken": refresh_token,
+            "email": email,
+            "tenantSlug": tenant_slug,
+            "tenantName": tenant_name,
+            "role": user_role,
+            "purpose": purpose,
+            "targetUrl": ctx.get("target_url", "/dashboard"),
+        })
+
+    except cognito.exceptions.UserNotFoundException:
+        return response(400, {"error": "USER_NOT_FOUND", "message": "No account found for this email."})
+    except cognito.exceptions.NotAuthorizedException as e:
+        print(f"[MAGIC-LINK-VERIFY] Auth failed: {str(e)}")
+        return response(400, {"error": "LINK_INVALID", "message": "This link is invalid or has expired."})
+    except Exception as e:
+        print(f"[MAGIC-LINK-VERIFY] ❌ Error: {str(e)}")
+        return response(500, {"error": "INTERNAL_ERROR", "message": str(e)})
+
+
+# ═════════════════════════════════════════════════════
+# DEMO APPROVALS — Pattern A
+# ═════════════════════════════════════════════════════
+
+def _require_auth(event):
+    """
+    Verify Bearer token. Returns (email, tenant_slug, tenant, None) on success.
+    Returns (None, None, None, error_response) on failure.
+    """
+    headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    if not auth_header.lower().startswith("bearer "):
+        return None, None, None, response(401, {"error": "MISSING_TOKEN"})
+
+    access_token = auth_header.split(" ", 1)[1].strip()
+    user_pool_id = os.environ["COGNITO_USER_POOL_ID"]
+
+    try:
+        user_info = cognito.get_user(AccessToken=access_token)
+    except cognito.exceptions.NotAuthorizedException:
+        return None, None, None, response(401, {"error": "INVALID_TOKEN"})
+
+    caller_email = ""
+    tenant_slug = ""
+    for attr in user_info.get("UserAttributes", []):
+        if attr["Name"] == "email":
+            caller_email = attr["Value"]
+        if attr["Name"] == "custom:tenant_id":
+            tenant_slug = attr["Value"]
+
+    if not tenant_slug:
+        return None, None, None, response(403, {"error": "NO_TENANT", "message": "User has no tenant"})
+
+    tenant = db.get_tenant_by_slug(tenant_slug)
+    if not tenant:
+        return None, None, None, response(404, {"error": "TENANT_NOT_FOUND"})
+
+    return caller_email, tenant_slug, tenant, None
+
+
+def handle_create_approval(event):
+    """
+    POST /demo/approvals
+    Body: { "title", "description", "approver_email" }
+    Requires auth. Creates a demo approval request.
+    """
+    caller_email, tenant_slug, tenant, err = _require_auth(event)
+    if err:
+        return err
+
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    title = (body.get("title") or "").strip()
+    description = (body.get("description") or "").strip()
+    approver_email = (body.get("approver_email") or "").strip().lower()
+
+    if not title:
+        return response(400, {"error": "MISSING_TITLE"})
+    if not approver_email or not EMAIL_REGEX.match(approver_email):
+        return response(400, {"error": "INVALID_APPROVER_EMAIL"})
+
+    approval = db.create_demo_approval(
+        tenant_id=str(tenant["id"]),
+        title=title,
+        description=description,
+        requested_by=caller_email,
+        approver_email=approver_email,
+    )
+
+    print(f"[DEMO-APPROVAL] Created {approval['id']} by {caller_email}")
+    return response(201, approval)
+
+
+def handle_get_approval(event):
+    """
+    GET /demo/approvals/{id}
+    Requires auth.
+    """
+    path = event.get("path", "")
+    parts = path.strip("/").split("/")
+    if len(parts) < 3:
+        return response(400, {"error": "MISSING_ID"})
+    approval_id = parts[2]
+
+    approval = db.get_demo_approval(approval_id)
+    if not approval:
+        return response(404, {"error": "NOT_FOUND"})
+
+    return response(200, approval)
+
+
+def handle_decide_approval(event):
+    """
+    POST /demo/approvals/{id}/decide
+    Body: { "decision": "approved"|"rejected", "comment": "..." }
+    Requires auth.
+    """
+    caller_email, _, _, err = _require_auth(event)
+    if err:
+        return err
+
+    path = event.get("path", "")
+    parts = path.strip("/").split("/")
+    if len(parts) < 4:
+        return response(400, {"error": "MISSING_ID"})
+    approval_id = parts[2]
+
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    decision = body.get("decision", "")
+    comment = body.get("comment", "")
+
+    if decision not in ("approved", "rejected"):
+        return response(400, {"error": "INVALID_DECISION", "message": "Must be 'approved' or 'rejected'"})
+
+    # Verify caller is the approver
+    approval = db.get_demo_approval(approval_id)
+    if not approval:
+        return response(404, {"error": "NOT_FOUND"})
+    if approval["approver_email"].lower() != caller_email.lower():
+        return response(403, {"error": "FORBIDDEN", "message": "Only the designated approver can decide"})
+
+    result = db.decide_demo_approval(approval_id, decision, comment)
+    if not result:
+        return response(400, {"error": "ALREADY_DECIDED", "message": "This approval has already been decided"})
+
+    print(f"[DEMO-APPROVAL] {approval_id} → {decision} by {caller_email}")
+    return response(200, result)
+
+
+def handle_notify_approval(event):
+    """
+    POST /demo/approvals/{id}/notify
+    Sends a magic link email to the approver.
+    Requires auth.
+    """
+    caller_email, _, _, err = _require_auth(event)
+    if err:
+        return err
+
+    path = event.get("path", "")
+    parts = path.strip("/").split("/")
+    if len(parts) < 4:
+        return response(400, {"error": "MISSING_ID"})
+    approval_id = parts[2]
+
+    approval = db.get_demo_approval(approval_id)
+    if not approval:
+        return response(404, {"error": "NOT_FOUND"})
+    if approval["status"] != "pending":
+        return response(400, {"error": "ALREADY_DECIDED"})
+
+    tenant = db.get_tenant_by_slug_or_id(str(approval["tenant_id"]))
+    if not tenant:
+        return response(404, {"error": "TENANT_NOT_FOUND"})
+
+    # Generate magic link for the approver
+    url = magic_link.generate_magic_link(
+        email=approval["approver_email"],
+        tenant_id=str(approval["tenant_id"]),
+        purpose="auth",
+        context={"target_url": f"/approvals/{approval_id}"},
+        ttl_minutes=15,
+    )
+
+    # Send notification email
+    magic_link.send_magic_link_email(
+        to_email=approval["approver_email"],
+        magic_link_url=url,
+        subject=f"Approval needed — {approval['title']}",
+        heading="Approval Request",
+        body_text=(
+            f"<strong>{approval['requested_by']}</strong> has requested your approval.<br><br>"
+            f"<strong>{approval['title']}</strong><br>"
+            f"{approval.get('description', '')}<br><br>"
+            "Click below to review and approve or reject."
+        ),
+        button_text="View & Approve",
+    )
+
+    print(f"[DEMO-APPROVAL] Notification sent for {approval_id} to {approval['approver_email']}")
+    return response(200, {"sent": True, "approval_id": str(approval_id)})
+
+
+# ═════════════════════════════════════════════════════
 # WELCOME EMAIL
 # ═════════════════════════════════════════════════════
 
@@ -1229,5 +1615,21 @@ def lambda_handler(event, context):
         return handle_save_idp_config(event)
     if method == "DELETE" and path == "/admin/idp-config":
         return handle_delete_idp_config(event)
+
+    # Magic link routes
+    if method == "POST" and path == "/magic-link/generate":
+        return handle_magic_link_generate(event)
+    if method == "POST" and path == "/magic-link/verify":
+        return handle_magic_link_verify(event)
+
+    # Demo approval routes (Pattern A)
+    if method == "POST" and path == "/demo/approvals":
+        return handle_create_approval(event)
+    if method == "GET" and path.startswith("/demo/approvals/"):
+        return handle_get_approval(event)
+    if method == "POST" and path.startswith("/demo/approvals/") and path.endswith("/decide"):
+        return handle_decide_approval(event)
+    if method == "POST" and path.startswith("/demo/approvals/") and path.endswith("/notify"):
+        return handle_notify_approval(event)
 
     return response(404, {"error": "NOT_FOUND"})

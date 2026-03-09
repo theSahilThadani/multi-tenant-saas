@@ -13,6 +13,8 @@ import AdminSettingsPage from './pages/AdminSettingsPage';
 import ApiKeysPage from './pages/ApiKeysPage';
 import AccessDeniedPage from './pages/AccessDeniedPage';
 import NotFoundPage from './pages/NotFoundPage';
+import MagicLinkPage from './pages/MagicLinkPage';
+import ApprovalPage from './pages/ApprovalPage';
 import LoadingSpinner from './components/LoadingSpinner';
 
 function AppRoutes() {
@@ -60,6 +62,8 @@ function AppRoutes() {
       <Route path="/auth/google/callback" element={<GoogleCallbackPage />} />
       <Route path="/admin/settings" element={<AdminSettingsPage />} />
       <Route path="/admin/api-keys" element={<ApiKeysPage />} />
+      <Route path="/auth/magic-link" element={<MagicLinkPage />} />
+      <Route path="/approvals/:id" element={<ApprovalPage />} />
       <Route path="/access-denied" element={<AccessDeniedPage />} />
       <Route path="/not-found" element={<NotFoundPage />} />
       <Route path="/" element={<Navigate to="/login" replace />} />
