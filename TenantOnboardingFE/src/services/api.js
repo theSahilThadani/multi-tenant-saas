@@ -265,3 +265,18 @@ export async function notifyApproval(approvalId, accessToken) {
   if (!res.ok) throw { status: res.status, ...data };
   return data;
 }
+
+// ─────────────────────────────────────────────
+// INVITATION APIs (Pattern B)
+// ─────────────────────────────────────────────
+
+export async function sendInvitation(data, accessToken) {
+  const res = await fetch(`${ONBOARDING_URL}/invitations/send`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+  if (!res.ok) throw { status: res.status, ...result };
+  return result;
+}

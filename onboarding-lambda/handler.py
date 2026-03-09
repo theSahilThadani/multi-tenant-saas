@@ -16,6 +16,7 @@ Routes:
   GET  /demo/approvals/{id}   → Get approval details
   POST /demo/approvals/{id}/decide → Approve or reject
   POST /demo/approvals/{id}/notify → Send magic link to approver
+  POST /invitations/send        → Send invitation magic link (admin only)
 """
 
 import os
@@ -1204,6 +1205,60 @@ def handle_magic_link_verify(event):
         tenant_slug = ""
         tenant_name = ""
 
+    # ── Invitation-specific: provision user before auth ──
+    is_new_user = False
+    if purpose == "invitation":
+        invite_role = ctx.get("role", "user")
+        try:
+            # Check if user exists in Cognito
+            try:
+                cognito.admin_get_user(UserPoolId=user_pool_id, Username=email)
+                print(f"[MAGIC-LINK-VERIFY] Invitation: user {email} exists in Cognito")
+            except cognito.exceptions.UserNotFoundException:
+                # Create user in Cognito
+                cognito.admin_create_user(
+                    UserPoolId=user_pool_id,
+                    Username=email,
+                    UserAttributes=[
+                        {"Name": "email", "Value": email},
+                        {"Name": "email_verified", "Value": "true"},
+                    ],
+                    MessageAction="SUPPRESS",
+                )
+                is_new_user = True
+                print(f"[MAGIC-LINK-VERIFY] Invitation: created Cognito user {email}")
+
+            # Set tenant attributes
+            cognito.admin_update_user_attributes(
+                UserPoolId=user_pool_id,
+                Username=email,
+                UserAttributes=[
+                    {"Name": "custom:tenant_id", "Value": tenant_slug},
+                    {"Name": "custom:role", "Value": invite_role},
+                ],
+            )
+
+            # Get cognito_sub
+            user_details = cognito.admin_get_user(UserPoolId=user_pool_id, Username=email)
+            cognito_sub = ""
+            for attr in user_details.get("UserAttributes", []):
+                if attr["Name"] == "sub":
+                    cognito_sub = attr["Value"]
+
+            # Insert into tenant_users (ignore if already exists)
+            try:
+                db.create_tenant_user(str(tenant_id), cognito_sub, email, invite_role)
+                print(f"[MAGIC-LINK-VERIFY] Invitation: added {email} to tenant_users")
+            except Exception as ue:
+                if "duplicate key" in str(ue).lower():
+                    print(f"[MAGIC-LINK-VERIFY] Invitation: user already in tenant_users")
+                else:
+                    raise ue
+
+        except Exception as e:
+            print(f"[MAGIC-LINK-VERIFY] Invitation provisioning failed: {str(e)}")
+            return response(500, {"error": "INVITATION_FAILED", "message": str(e)})
+
     try:
         # Step 1: Initiate custom auth
         print(f"[MAGIC-LINK-VERIFY] Initiating CUSTOM_AUTH for {email}")
@@ -1248,7 +1303,7 @@ def handle_magic_link_verify(event):
             if attr["Name"] == "custom:role":
                 user_role = attr["Value"]
 
-        print(f"[MAGIC-LINK-VERIFY] ✅ Authenticated {email} via magic link")
+        print(f"[MAGIC-LINK-VERIFY] ✅ Authenticated {email} via magic link (purpose={purpose})")
 
         return response(200, {
             "accessToken": access_token,
@@ -1259,6 +1314,7 @@ def handle_magic_link_verify(event):
             "tenantName": tenant_name,
             "role": user_role,
             "purpose": purpose,
+            "isNewUser": is_new_user if purpose == "invitation" else False,
             "targetUrl": ctx.get("target_url", "/dashboard"),
         })
 
@@ -1463,6 +1519,89 @@ def handle_notify_approval(event):
 
 
 # ═════════════════════════════════════════════════════
+# INVITATIONS — Pattern B
+# ═════════════════════════════════════════════════════
+
+def handle_send_invitation(event):
+    """
+    POST /invitations/send
+    Body: { "email", "role" }
+    Requires tenant_admin auth. Sends a magic link invitation to join the workspace.
+    """
+    tenant_slug, tenant, err = _require_tenant_admin(event)
+    if err:
+        return err
+
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "INVALID_JSON"})
+
+    email = (body.get("email") or "").strip().lower()
+    role = (body.get("role") or "user").strip().lower()
+
+    if not email or not EMAIL_REGEX.match(email):
+        return response(400, {"error": "INVALID_EMAIL"})
+    if role not in ("user", "agent", "tenant_admin"):
+        return response(400, {"error": "INVALID_ROLE", "message": "Must be 'user', 'agent', or 'tenant_admin'"})
+
+    # Check if user already in this tenant
+    tenant_id = str(tenant["id"])
+    existing_user = db.get_tenant_user(tenant_id, email)
+    if existing_user:
+        return response(409, {"error": "USER_ALREADY_IN_TENANT", "message": f"{email} is already a member of this workspace"})
+
+    # Get inviter email
+    headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    access_token = auth_header.split(" ", 1)[1].strip()
+    user_info = cognito.get_user(AccessToken=access_token)
+    inviter_email = ""
+    for attr in user_info.get("UserAttributes", []):
+        if attr["Name"] == "email":
+            inviter_email = attr["Value"]
+
+    # Generate magic link (7-day TTL for invitations)
+    app_domain = os.environ.get("APP_DOMAIN", "localhost:3000")
+    url = magic_link.generate_magic_link(
+        email=email,
+        tenant_id=tenant_id,
+        purpose="invitation",
+        context={
+            "target_url": "/invitation/complete",
+            "role": role,
+            "invited_by": inviter_email,
+            "tenant_name": tenant.get("name", ""),
+        },
+        ttl_minutes=60 * 24 * 7,  # 7 days
+    )
+
+    # Send invitation email
+    tenant_name = tenant.get("name", tenant_slug)
+    magic_link.send_magic_link_email(
+        to_email=email,
+        magic_link_url=url,
+        subject=f"You're invited to {tenant_name}",
+        heading=f"Join {tenant_name}",
+        body_text=(
+            f"<strong>{inviter_email}</strong> has invited you to join "
+            f"<strong>{tenant_name}</strong>.<br><br>"
+            f"Role: <strong>{role}</strong><br><br>"
+            "Click below to accept the invitation and set up your account."
+        ),
+        button_text="Join Workspace",
+    )
+
+    print(f"[INVITATION] Sent to {email} for {tenant_slug} as {role} by {inviter_email}")
+    return response(200, {
+        "sent": True,
+        "email": email,
+        "role": role,
+        "tenantSlug": tenant_slug,
+    })
+
+
+# ═════════════════════════════════════════════════════
 # WELCOME EMAIL
 # ═════════════════════════════════════════════════════
 
@@ -1631,5 +1770,9 @@ def lambda_handler(event, context):
         return handle_decide_approval(event)
     if method == "POST" and path.startswith("/demo/approvals/") and path.endswith("/notify"):
         return handle_notify_approval(event)
+
+    # Invitation routes (Pattern B)
+    if method == "POST" and path == "/invitations/send":
+        return handle_send_invitation(event)
 
     return response(404, {"error": "NOT_FOUND"})

@@ -41,6 +41,8 @@ export default function MagicLinkPage() {
             role: data.role,
             tenantSlug: data.tenantSlug,
             tenantName: data.tenantName,
+            isNewUser: data.isNewUser || false,
+            purpose: data.purpose,
           },
         });
       } catch (err) {

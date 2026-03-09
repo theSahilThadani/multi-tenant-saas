@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTenant } from "../context/TenantContext";
-import { createApproval, notifyApproval } from "../services/api";
+import { createApproval, notifyApproval, sendInvitation } from "../services/api";
 import config from "../config";
 
 export default function DashboardPage() {
@@ -333,6 +333,33 @@ export default function DashboardPage() {
           />
         </div>
 
+        {/* Magic Link Demo — Invite User (admin only) */}
+        {isAdmin && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "20px",
+              background: "white",
+              border: "1px solid var(--gray-200)",
+              borderRadius: "var(--radius-lg)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <span style={{ fontSize: 22 }}>👥</span>
+              <div>
+                <div style={{ fontWeight: 600, color: "var(--gray-800)" }}>
+                  Magic Link Demo — Invite User
+                </div>
+                <div style={{ fontSize: 13, color: "var(--gray-500)", marginTop: 2 }}>
+                  Invite someone to join your workspace. They'll receive a magic link — one click creates their account and signs them in.
+                </div>
+              </div>
+            </div>
+
+            <InviteUserForm accessToken={userData.accessToken} />
+          </div>
+        )}
+
         {/* Footer note */}
         <div
           style={{
@@ -464,6 +491,95 @@ function DemoApprovalForm({ accessToken, userEmail, tenantSlug }) {
         }}
       >
         {isLoading ? (status === "creating" ? "Creating approval..." : "Sending email...") : "Create & Send Magic Link"}
+      </button>
+    </div>
+  );
+}
+
+
+function InviteUserForm({ accessToken }) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("user");
+  const [status, setStatus] = useState("idle"); // idle, sending, done, error
+  const [error, setError] = useState("");
+
+  async function handleSend() {
+    setStatus("sending");
+    setError("");
+    try {
+      await sendInvitation({ email, role }, accessToken);
+      setStatus("done");
+    } catch (err) {
+      setError(err.message || "Failed to send invitation");
+      setStatus("error");
+    }
+  }
+
+  if (status === "done") {
+    return (
+      <div style={{ padding: 16, background: "#D1FAE5", borderRadius: 8, textAlign: "center" }}>
+        <p style={{ margin: 0, fontWeight: 600, color: "#065F46" }}>
+          ✓ Invitation sent to {email}
+        </p>
+        <p style={{ margin: "8px 0 0", fontSize: 13, color: "#065F46" }}>
+          They'll receive an email with a magic link to join the workspace.
+        </p>
+        <button
+          onClick={() => { setStatus("idle"); setEmail(""); }}
+          style={{
+            marginTop: 12, padding: "6px 16px", background: "transparent",
+            border: "1px solid #065F46", borderRadius: 6, color: "#065F46",
+            cursor: "pointer", fontSize: 13,
+          }}
+        >
+          Invite Another
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Email</label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="colleague@example.com"
+          style={{
+            width: "100%", padding: 8, borderRadius: 6, border: "1px solid var(--gray-300)",
+            fontSize: 14, boxSizing: "border-box",
+          }}
+        />
+      </div>
+      <div>
+        <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Role</label>
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value)}
+          style={{
+            width: "100%", padding: 8, borderRadius: 6, border: "1px solid var(--gray-300)",
+            fontSize: 14, boxSizing: "border-box", background: "white",
+          }}
+        >
+          <option value="user">User</option>
+          <option value="agent">Agent</option>
+          <option value="tenant_admin">Admin</option>
+        </select>
+      </div>
+      {error && <p style={{ color: "#DC2626", fontSize: 13, margin: 0 }}>{error}</p>}
+      <button
+        onClick={handleSend}
+        disabled={status === "sending" || !email}
+        style={{
+          padding: "10px 20px", backgroundColor: "#4F46E5", color: "white",
+          border: "none", borderRadius: 6, cursor: status === "sending" ? "not-allowed" : "pointer",
+          fontSize: 14, fontWeight: 600, opacity: status === "sending" ? 0.7 : 1,
+          alignSelf: "flex-start",
+        }}
+      >
+        {status === "sending" ? "Sending..." : "Send Invitation"}
       </button>
     </div>
   );

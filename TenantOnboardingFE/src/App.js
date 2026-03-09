@@ -15,6 +15,7 @@ import AccessDeniedPage from './pages/AccessDeniedPage';
 import NotFoundPage from './pages/NotFoundPage';
 import MagicLinkPage from './pages/MagicLinkPage';
 import ApprovalPage from './pages/ApprovalPage';
+import InvitationCompletePage from './pages/InvitationCompletePage';
 import LoadingSpinner from './components/LoadingSpinner';
 
 function AppRoutes() {
@@ -64,6 +65,7 @@ function AppRoutes() {
       <Route path="/admin/api-keys" element={<ApiKeysPage />} />
       <Route path="/auth/magic-link" element={<MagicLinkPage />} />
       <Route path="/approvals/:id" element={<ApprovalPage />} />
+      <Route path="/invitation/complete" element={<InvitationCompletePage />} />
       <Route path="/access-denied" element={<AccessDeniedPage />} />
       <Route path="/not-found" element={<NotFoundPage />} />
       <Route path="/" element={<Navigate to="/login" replace />} />
